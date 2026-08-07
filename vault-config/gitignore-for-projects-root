@@ -1,0 +1,24 @@
+# .gitignore for ~/.claude/projects/ — makes the vault root and the git root the same directory.
+#
+# Install:  cp gitignore-for-projects-root ~/.claude/projects/.gitignore
+#
+# Verified 2026-08-07 against the real tree: versions exactly the 86 memory files
+# plus the two shared Obsidian settings. Everything the harness writes is excluded.
+
+# Ignore every file by default
+*
+
+# ...but let git descend into directories, so the re-includes below can match.
+# (Without this, nothing nested is reachable — a re-include cannot resurrect a
+# file whose parent directory is still excluded.)
+!*/
+
+# Re-include only what belongs to the memory realm
+!.gitignore
+!*/memory/**
+
+# Obsidian: share the graph/app config, never the per-machine window layout.
+# workspace.json, workspace-mobile.json, and cache are machine-local by nature
+# and cause pointless conflicts if synced.
+!.obsidian/app.json
+!.obsidian/graph.json

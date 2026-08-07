@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""
+promote-loop-memory.py — the door out of a loop's holding pen.
+
+A loop writes everything it learns to progress.txt. Most of that is a diary and
+belongs nowhere else. Some of it is a real lesson. This moves the lessons out --
+but only for work that was actually accepted, and only after a human looks.
+
+Two steps, on purpose:
+
+  1. propose   read the loop, write DRAFT notes to a review folder
+               (never the vault). Delete the ones you don't want.
+  2. land      copy whatever survived into the notes vault.
+
+The gate is prd.json's `passes` flag. Nothing is proposed from a loop where no
+story was accepted -- a sandbox run that failed leaves no trace in your notes.
+"""
+
+from __future__ import annotations
+import argparse, json, re, subprocess, sys
+from pathlib import Path
+
+REVIEW_DIR = Path(__file__).resolve().parent.parent / "loop-memory-review"
+
+# A line naming a file inside the repo is almost always true only of that repo.
+# A line naming a command, or stating a rule, tends to hold everywhere.
+PROJECT_SPECIFIC = re.compile(r"\b\w+/[\w./-]+\.\w{1,4}\b|\bsrc/|\blib/|\b\w+\.(ts|py|go|rs|tsx|js)\b")
+DURABLE_HINT = re.compile(
+    r"\b(always|never|doesn't|does not|won't|will not|cannot|can't|requires?|"
+    r"must|fails?|breaks?|gotcha|instead of|without network|offline|"
+    r"works? fine|not supported|deprecated)\b", re.I)
+
+
+def slug(text: str, n: int = 60) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s[:n].rstrip("-") or "loop-lesson"
+
+
+def read_stories(project: Path) -> tuple[list, list]:
+    """Return (accepted, total) stories. Looks at prd.json and any prps/*.json."""
+    accepted, total = [], []
+    for spec in [project / "prd.json", *sorted(project.glob("prps/*.json"))]:
+        if not spec.exists():
+            continue
+        try:
+            data = json.loads(spec.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            print(f"  ! {spec.name} is not valid JSON — skipped", file=sys.stderr)
+            continue
+        for s in data.get("userStories", data.get("stories", [])):
+            total.append(s)
+            if s.get("passes") is True:
+                accepted.append(s)
+    return accepted, total
+
+
+def read_patterns(project: Path) -> list[str]:
+    """Pull the '## Codebase Patterns' block out of every progress file."""
+    out = []
+    for pf in sorted(project.glob("progress*.txt")):
+        text = pf.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"^##\s*Codebase Patterns\s*$(.*?)(?=^##\s|\Z)", text, re.S | re.M)
+        if not m:
+            continue
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            if line.startswith("-"):
+                item = line.lstrip("- ").strip()
+                if item and item not in out:
+                    out.append(item)
+    return out
+
+
+def classify(item: str) -> str:
+    if PROJECT_SPECIFIC.search(item) and not DURABLE_HINT.search(item):
+        return "project-specific"
+    if DURABLE_HINT.search(item):
+        return "durable"
+    return "unclear"
+
+
+def git_head(project: Path) -> str:
+    try:
+        return subprocess.run(["git", "-C", str(project), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=5).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def realm_for(project: Path) -> str:
+    return "-" + str(project.resolve()).lstrip("/").replace("/", "-").replace(".", "-")
+
+
+def cmd_propose(a) -> int:
+    project = Path(a.project).expanduser().resolve()
+    if not project.is_dir():
+        print(f"no such project: {project}", file=sys.stderr)
+        return 1
+
+    accepted, total = read_stories(project)
+    print(f"project   {project.name}")
+    print(f"accepted  {len(accepted)}/{len(total)} stories have passes:true")
+
+    if not total:
+        print("\nNo prd.json / prps found. This does not look like a loop project.", file=sys.stderr)
+        return 1
+    if not accepted:
+        print("\nGATE CLOSED — nothing was accepted, so nothing is proposed.")
+        print("A sandbox run that never landed leaves no trace in your notes. That is the point.")
+        return 0
+
+    patterns = read_patterns(project)
+    if not patterns:
+        print("\nAccepted work, but no '## Codebase Patterns' section to promote.")
+        print("The loop recorded a diary and no lessons.")
+        return 0
+
+    head = git_head(project)
+    buckets = {"durable": [], "unclear": [], "project-specific": []}
+    for p in patterns:
+        buckets[classify(p)].append(p)
+
+    print(f"\nlessons found  {len(patterns)}")
+    for k in ("durable", "unclear", "project-specific"):
+        print(f"  {k:<17} {len(buckets[k])}")
+
+    out_dir = REVIEW_DIR / project.name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for kind in ("durable", "unclear"):          # project-specific never drafted
+        for item in buckets[kind]:
+            name = f"loop-{slug(item, 50)}"
+            path = out_dir / f"{name}.md"
+            if path.exists():
+                continue
+            first = item.split(".")[0].strip().replace('"', "'")[:110]
+            path.write_text(
+                "---\n"
+                f"name: {name}\n"
+                f'description: "{first}"\n'
+                "metadata:\n"
+                "  node_type: memory\n"
+                "  type: reference\n"
+                f"  source: loop:{project.name}@{head}\n"
+                f"  confidence: {kind}\n"
+                "---\n\n"
+                f"{item}\n\n"
+                f"Learned by a Ralph loop in `{project.name}`, promoted after "
+                f"{len(accepted)} of {len(total)} stories were accepted "
+                f"(`passes: true`) at `{head}`.\n",
+                encoding="utf-8")
+            written += 1
+
+    print(f"\nwrote {written} drafts to  {out_dir}")
+    print("\nNext: delete the drafts you don't want, edit the ones you keep, then")
+    print(f"  promote-loop-memory.py land --project {project}")
+    if buckets["project-specific"]:
+        print(f"\nSkipped {len(buckets['project-specific'])} lines that look repo-specific "
+              "(they name files inside this repo). Shown with --verbose.")
+        if a.verbose:
+            for p in buckets["project-specific"]:
+                print(f"    - {p[:100]}")
+    return 0
+
+
+def cmd_land(a) -> int:
+    project = Path(a.project).expanduser().resolve()
+    src = REVIEW_DIR / project.name
+    if not src.is_dir():
+        print(f"nothing to land — no review folder at {src}", file=sys.stderr)
+        return 1
+    drafts = sorted(src.glob("*.md"))
+    if not drafts:
+        print("review folder is empty — nothing kept, nothing landed.")
+        return 0
+
+    realm = a.realm or realm_for(project)
+    dest = Path(a.vault).expanduser() / realm / "memory"
+    print(f"landing {len(drafts)} notes into {dest}")
+    if not a.write:
+        for d in drafts:
+            print(f"  would copy  {d.name}")
+        print("\nDRY RUN — add --write to actually copy.")
+        return 0
+
+    dest.mkdir(parents=True, exist_ok=True)
+    for d in drafts:
+        target = dest / d.name
+        if target.exists():
+            print(f"  skip (exists)  {d.name}")
+            continue
+        target.write_text(d.read_text(encoding="utf-8"), encoding="utf-8")
+        d.unlink()
+        print(f"  landed  {d.name}")
+    print("\nDone. Add index lines to that realm's MEMORY.md, then commit.")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("propose", help="read a loop, write drafts to the review folder")
+    p.add_argument("--project", required=True)
+    p.add_argument("--verbose", action="store_true")
+
+    p = sub.add_parser("land", help="copy surviving drafts into the vault")
+    p.add_argument("--project", required=True)
+    p.add_argument("--vault", default=str(Path.home() / ".claude/projects"))
+    p.add_argument("--realm", help="override the destination realm folder")
+    p.add_argument("--write", action="store_true")
+
+    a = ap.parse_args()
+    return {"propose": cmd_propose, "land": cmd_land}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

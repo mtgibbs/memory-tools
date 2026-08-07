@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""
+infer-links.py — grow the memory graph without a server.
+
+Reads every note in the vault, scores pairwise similarity, and writes the
+strongest neighbours back into each note as [[wikilinks]] inside a delimited
+block. The links live in the files, so Obsidian draws them, git versions them,
+and nothing has to be running for the graph to exist.
+
+This is the local answer to second-brain-cloudflare's `inferEdgesOnWrite`:
+same idea (memories link themselves), different substrate (markdown, not D1),
+and provenance is kept by putting inferred links in their own block rather than
+in an `explicit | inferred` column.
+
+Similarity is TF-IDF cosine — no dependencies, offline, deterministic, and it
+can explain itself ("linked because: coredns, pihole, forward"). At 88 notes of
+dense technical prose, shared rare terms are a strong signal; swap in embeddings
+only if the corpus grows past the point where that stops being true.
+
+Dry-run by default. --write is required to touch anything.
+"""
+
+from __future__ import annotations
+import argparse, math, re, sys
+from collections import Counter
+from pathlib import Path
+
+BEGIN = "<!-- inferred-links:begin -->"
+END = "<!-- inferred-links:end -->"
+
+# Index files are addresses, not concepts. Thirteen of them share a basename,
+# so linking to one is ambiguous anyway. Excluded as both source and target.
+EXCLUDE_NAMES = {"MEMORY"}
+
+STOP = set("""
+a about above after again against all am an and any are aren as at be because been
+before being below between both but by can cannot could couldn did didn do does
+doesn doing don down during each few for from further had hadn has hasn have haven
+having he her here hers herself him himself his how i if in into is isn it its
+itself just me more most mustn my myself no nor not now of off on once only or
+other ought our ours ourselves out over own same shan she should shouldn so some
+such than that the their theirs them themselves then there these they this those
+through to too under until up very was wasn we were weren what when where which
+while who whom why with won would wouldn you your yours yourself yourselves
+use used using via when via also new get set run via etc via one two per
+""".split())
+
+TOKEN = re.compile(r"[a-z][a-z0-9_-]{2,}")
+FRONTMATTER = re.compile(r"\A---\n.*?\n---\n", re.S)
+CODEBLOCK = re.compile(r"```.*?```", re.S)
+WIKILINK = re.compile(r"\[\[([^\]|#]+)")
+MDLINK = re.compile(r"\[[^\]]*\]\(([^)\s]+\.md)\)")
+
+
+def strip_inferred(text: str) -> str:
+    """Remove a previously written block so the pass is idempotent and never
+    feeds its own output back into the similarity model."""
+    if BEGIN not in text:
+        return text
+    head, _, rest = text.partition(BEGIN)
+    _, _, tail = rest.partition(END)
+    return (head.rstrip() + "\n" + tail.lstrip("\n")).rstrip() + "\n"
+
+
+def tokenize(text: str) -> list[str]:
+    text = FRONTMATTER.sub("", text)
+    text = CODEBLOCK.sub(" ", text)
+    text = re.sub(r"`[^`]*`", " ", text)
+    return [t for t in TOKEN.findall(text.lower()) if t not in STOP]
+
+
+class Note:
+    __slots__ = ("path", "realm", "name", "raw", "body", "tokens", "vec", "authored")
+
+    def __init__(self, path: Path, vault: Path):
+        self.path = path
+        rel = path.relative_to(vault)
+        self.realm = rel.parts[0]
+        self.name = path.stem
+        self.raw = path.read_text(encoding="utf-8", errors="replace")
+        self.body = strip_inferred(self.raw)
+        self.tokens = tokenize(self.body)
+        self.authored = {t.strip() for t in WIKILINK.findall(self.body)} | {
+            Path(t).stem for t in MDLINK.findall(self.body)
+        }
+        self.vec: dict[str, float] = {}
+
+
+def build_vectors(notes: list[Note]) -> None:
+    n = len(notes)
+    df = Counter()
+    for note in notes:
+        df.update(set(note.tokens))
+    for note in notes:
+        tf = Counter(note.tokens)
+        vec = {}
+        for term, count in tf.items():
+            if df[term] < 2 or df[term] > n * 0.5:
+                continue  # unique to one note, or so common it carries no signal
+            vec[term] = (1 + math.log(count)) * math.log(n / df[term])
+        norm = math.sqrt(sum(w * w for w in vec.values())) or 1.0
+        note.vec = {t: w / norm for t, w in vec.items()}
+
+
+def similarity(a: Note, b: Note) -> tuple[float, list[str]]:
+    small, large = (a.vec, b.vec) if len(a.vec) <= len(b.vec) else (b.vec, a.vec)
+    contrib = {t: w * large[t] for t, w in small.items() if t in large}
+    score = sum(contrib.values())
+    top = [t for t, _ in sorted(contrib.items(), key=lambda kv: -kv[1])[:4]]
+    return score, top
+
+
+def render_block(links: list[tuple[Note, float, list[str], bool]]) -> str:
+    lines = [BEGIN, "## Related (inferred)", ""]
+    for target, score, terms, cross in links:
+        mark = " ⇄" if cross else ""
+        lines.append(f"- [[{target.name}]]{mark} — {score:.2f} · {', '.join(terms)}")
+    lines += ["", END]
+    return "\n".join(lines)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--vault", default=str(Path.home() / ".claude/projects"))
+    ap.add_argument("--top", type=int, default=3, help="max inferred links per note (default 3)")
+    # 0.15 tuned against this corpus 2026-08-07: below it, notes start matching on
+    # generic project vocabulary ("role", "shipped", "want") and cross-domain false
+    # positives appear — an HOA signing-policy note linked to a docs-vs-memory note
+    # on the shared word "role". Above ~0.20 real connections start dropping.
+    ap.add_argument("--min-score", type=float, default=0.15, help="cosine floor (default 0.15)")
+    ap.add_argument("--write", action="store_true", help="actually modify files (default: dry run)")
+    ap.add_argument("--quiet", action="store_true")
+    args = ap.parse_args()
+
+    vault = Path(args.vault).expanduser()
+    paths = sorted(p for p in vault.glob("*/memory/*.md") if p.stem not in EXCLUDE_NAMES)
+    if not paths:
+        print(f"no notes found under {vault}/*/memory/*.md", file=sys.stderr)
+        return 1
+
+    notes = [Note(p, vault) for p in paths]
+    build_vectors(notes)
+
+    proposals: dict[int, list] = {}
+    cross_count = intra_count = 0
+    for i, a in enumerate(notes):
+        scored = []
+        for j, b in enumerate(notes):
+            if i == j or b.name in a.authored:
+                continue  # never duplicate a link the human already wrote
+            score, terms = similarity(a, b)
+            if score >= args.min_score:
+                scored.append((b, score, terms, a.realm != b.realm))
+        scored.sort(key=lambda t: -t[1])
+        keep = scored[: args.top]
+        if keep:
+            proposals[i] = keep
+            for _, _, _, cross in keep:
+                if cross:
+                    cross_count += 1
+                else:
+                    intra_count += 1
+
+    if not args.quiet:
+        print(f"vault      {vault}")
+        print(f"notes      {len(notes)} (MEMORY.md excluded as ambiguous)")
+        print(f"proposed   {intra_count + cross_count} links — {intra_count} same-realm, {cross_count} CROSS-REALM")
+        print(f"coverage   {len(proposals)}/{len(notes)} notes gain at least one link")
+        print()
+        shown = [(i, k) for i, k in proposals.items() if any(c for *_, c in k)]
+        print(f"--- cross-realm proposals ({len(shown)} notes) — the ones that matter ---")
+        for i, keep in shown[:14]:
+            a = notes[i]
+            for target, score, terms, cross in keep:
+                if cross:
+                    print(f"  {a.realm[:26]:<26} {a.name[:30]:<30} -> {target.realm[:26]:<26} {target.name[:28]:<28} {score:.2f}  {', '.join(terms[:3])}")
+        if len(shown) > 14:
+            print(f"  … and {len(shown) - 14} more notes with cross-realm proposals")
+
+    if not args.write:
+        print("\nDRY RUN — nothing written. Re-run with --write to apply.")
+        return 0
+
+    changed = 0
+    for i, keep in proposals.items():
+        note = notes[i]
+        new = note.body.rstrip() + "\n\n" + render_block(keep) + "\n"
+        if new != note.raw:
+            note.path.write_text(new, encoding="utf-8")
+            changed += 1
+    # notes that lost all proposals get their stale block removed
+    for i, note in enumerate(notes):
+        if i not in proposals and BEGIN in note.raw:
+            note.path.write_text(note.body, encoding="utf-8")
+            changed += 1
+    print(f"\nwrote {changed} files")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,13 @@
+{
+  "userIgnoreFilters": [
+    "/\\.jsonl$/",
+    "/\\.json$/",
+    "/\\.txt$/",
+    "/\\.pdf$/",
+    "/tool-results/"
+  ],
+  "showUnsupportedFiles": false,
+  "alwaysUpdateLinks": true,
+  "newLinkFormat": "shortest",
+  "useMarkdownLinks": false
+}

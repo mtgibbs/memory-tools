@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""
+graph.py — traverse the memory graph without reading every file.
+
+An agent reading a note sees what it points AT (the links are in the text) but
+cannot see what points AT IT without scanning the whole corpus. Backlinks are
+the expensive direction, so that is what this precomputes.
+
+Everything is derived from the markdown at call time — there is no index to
+rebuild, nothing to keep in sync, and no daemon. At this corpus size a full
+parse is a few milliseconds.
+
+Links are reported with provenance: `authored` links are hand-written,
+`inferred` ones come from the block infer-links.py maintains. Weight them
+accordingly — an inferred link is a suggestion, not an assertion.
+
+  graph.py neighbors <note> [--hops N]   what connects to this, both directions
+  graph.py path <from> <to>              how two notes are related, if at all
+  graph.py keystones [-n N]              most-linked-to notes
+  graph.py orphans                       notes nothing reaches
+  graph.py realms                        per-realm connectivity summary
+
+Add --json to any subcommand for machine-readable output.
+"""
+
+from __future__ import annotations
+import argparse, json, os, re, sys
+from collections import defaultdict, deque
+from pathlib import Path
+
+BEGIN = "<!-- inferred-links:begin -->"
+END = "<!-- inferred-links:end -->"
+WIKI = re.compile(r"\[\[([^\]|#]+)")
+MD = re.compile(r"\[[^\]]*\]\(([^)\s]+\.md)\)")
+
+
+class Graph:
+    def __init__(self, vault: Path):
+        self.vault = vault
+        self.realm: dict[str, str] = {}
+        self.out: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        self.inn: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        self._load()
+
+    def _load(self) -> None:
+        # Nodes are keyed "<realm>/<stem>", NOT by basename. Thirteen realms each
+        # hold a MEMORY.md; collapsing them into one node invents a 2-hop path
+        # between every pair of realms through a file that does not exist.
+        # Obsidian keeps them as distinct nodes too — only link *resolution* is
+        # ambiguous there, which is what by_stem below models.
+        paths = sorted(self.vault.glob("*/memory/*.md"))
+        self.by_stem: dict[str, list[str]] = defaultdict(list)
+        for p in paths:
+            node = f"{p.parts[-3]}/{p.stem}"
+            self.realm[node] = p.parts[-3]
+            self.by_stem[p.stem].append(node)
+        for p in paths:
+            src = f"{p.parts[-3]}/{p.stem}"
+            text = p.read_text(encoding="utf-8", errors="replace")
+            authored, inferred = text, ""
+            if BEGIN in text:
+                authored, _, rest = text.partition(BEGIN)
+                inferred, _, tail = rest.partition(END)
+                authored += tail
+            for chunk, prov in ((authored, "authored"), (inferred, "inferred")):
+                for raw in WIKI.findall(chunk):
+                    self._edge(src, raw.strip(), prov)
+                for raw in MD.findall(chunk):
+                    self._edge(src, Path(raw).stem, prov)
+
+    def _target(self, src: str, stem: str) -> str | None:
+        """Resolve a link the way Obsidian does: a note in the linker's own realm
+        wins; otherwise a unique vault-wide match. Ambiguous links resolve to
+        nothing rather than to an arbitrary pick."""
+        cands = self.by_stem.get(stem, [])
+        same = [c for c in cands if self.realm[c] == self.realm.get(src)]
+        if same:
+            return same[0]
+        return cands[0] if len(cands) == 1 else None
+
+    def _edge(self, src: str, stem: str, prov: str) -> None:
+        dst = self._target(src, stem)
+        if dst is None:                       # ghost, or ambiguous across realms
+            if (stem, prov) not in self.out[src]:
+                self.out[src].append((stem, prov))
+            return
+        if dst == src:
+            return
+        if (dst, prov) not in self.out[src]:
+            self.out[src].append((dst, prov))
+        if (src, prov) not in self.inn[dst]:
+            self.inn[dst].append((src, prov))
+
+    def exists(self, name: str) -> bool:
+        return name in self.realm
+
+    def resolve(self, name: str) -> str | None:
+        if name in self.realm:
+            return name
+        exact = self.by_stem.get(name, [])
+        if len(exact) == 1:
+            return exact[0]
+        hits = exact or [n for n in self.realm if name.lower() in n.split("/")[-1].lower()]
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            print(f"ambiguous: {name!r} matches {len(hits)}", file=sys.stderr)
+            for h in sorted(hits)[:8]:
+                print(f"  {h}", file=sys.stderr)
+        return None
+
+    def undirected(self, node: str) -> set[str]:
+        return {d for d, _ in self.out[node] if d in self.realm} | {s for s, _ in self.inn[node]}
+
+
+def cmd_neighbors(g: Graph, a) -> dict:
+    node = g.resolve(a.note)
+    if not node:
+        print(f"no note matching {a.note!r}", file=sys.stderr)
+        sys.exit(1)
+    out = {"note": node, "realm": g.realm[node], "hops": {}}
+    seen, frontier = {node}, {node}
+    for hop in range(1, a.hops + 1):
+        nxt = set()
+        for n in frontier:
+            nxt |= g.undirected(n)
+        nxt -= seen
+        seen |= nxt
+        out["hops"][hop] = sorted(nxt)
+        frontier = nxt
+    out["outbound"] = [{"to": d, "provenance": p, "resolves": d in g.realm} for d, p in g.out[node]]
+    out["inbound"] = [{"from": s, "provenance": p} for s, p in g.inn[node]]
+    return out
+
+
+def cmd_path(g: Graph, a) -> dict:
+    s, t = g.resolve(a.frm), g.resolve(a.to)
+    if not s or not t:
+        print("could not resolve both endpoints", file=sys.stderr)
+        sys.exit(1)
+    prev, q = {s: None}, deque([s])
+    while q:
+        cur = q.popleft()
+        if cur == t:
+            break
+        for nb in sorted(g.undirected(cur)):
+            if nb not in prev:
+                prev[nb] = cur
+                q.append(nb)
+    if t not in prev:
+        return {"from": s, "to": t, "path": None, "note": "no path — these are in disconnected components"}
+    path, cur = [], t
+    while cur is not None:
+        path.append(cur)
+        cur = prev[cur]
+    return {"from": s, "to": t, "hops": len(path) - 1, "path": list(reversed(path))}
+
+
+def cmd_keystones(g: Graph, a) -> dict:
+    rows = []
+    for n in g.realm:
+        auth = sum(1 for _, p in g.inn[n] if p == "authored")
+        infr = sum(1 for _, p in g.inn[n] if p == "inferred")
+        if auth + infr:
+            rows.append({"note": n.split("/")[-1], "realm": g.realm[n], "inbound": auth + infr,
+                         "authored": auth, "inferred": infr})
+    rows.sort(key=lambda r: (-r["inbound"], -r["authored"], r["note"]))
+    return {"keystones": rows[: a.n]}
+
+
+def cmd_orphans(g: Graph, a) -> dict:
+    o = [{"note": n.split("/")[-1], "realm": g.realm[n]} for n in sorted(g.realm)
+         if not g.out[n] and not g.inn[n]]
+    return {"orphans": o, "count": len(o), "total": len(g.realm)}
+
+
+def cmd_realms(g: Graph, a) -> dict:
+    agg = defaultdict(lambda: {"notes": 0, "intra": 0, "cross": 0, "dangling": 0})
+    for n, r in g.realm.items():
+        agg[r]["notes"] += 1
+        for d, _ in g.out[n]:
+            if d not in g.realm:
+                agg[r]["dangling"] += 1
+            elif g.realm[d] == r:
+                agg[r]["intra"] += 1
+            else:
+                agg[r]["cross"] += 1
+    return {"realms": [{"realm": k, **v} for k, v in sorted(agg.items(), key=lambda kv: -kv[1]["notes"])]}
+
+
+def render(cmd: str, data: dict) -> None:
+    if cmd == "neighbors":
+        print(f"{data['note']}   [{data['realm']}]")
+        print(f"\n  outbound ({len(data['outbound'])}):")
+        for e in data["outbound"]:
+            flag = "" if e["resolves"] else "  ← GHOST, target does not exist"
+            print(f"    {e['provenance']:<9} -> {e['to']}{flag}")
+        print(f"\n  inbound ({len(data['inbound'])}):")
+        for e in data["inbound"]:
+            print(f"    {e['provenance']:<9} <- {e['from']}")
+        for hop, names in data["hops"].items():
+            if int(hop) > 1 and names:
+                print(f"\n  {hop} hops away ({len(names)}): {', '.join(names[:12])}"
+                      + (" …" if len(names) > 12 else ""))
+    elif cmd == "path":
+        if not data.get("path"):
+            print(f"{data['from']}  ⇸  {data['to']}\n  {data['note']}")
+        else:
+            print(f"{data['hops']} hops:")
+            for i, n in enumerate(data["path"]):
+                print(f"  {'└─ ' if i else ''}{n}")
+    elif cmd == "keystones":
+        print(f"{'inbound':>8} {'auth':>5} {'infer':>6}  note")
+        for r in data["keystones"]:
+            print(f"{r['inbound']:>8} {r['authored']:>5} {r['inferred']:>6}  {r['note']}")
+    elif cmd == "orphans":
+        print(f"{data['count']} of {data['total']} notes have no links in or out")
+        for o in data["orphans"]:
+            print(f"  {o['realm'][:40]:<40} {o['note']}")
+    elif cmd == "realms":
+        print(f"{'realm':<46}{'notes':>6}{'intra':>7}{'cross':>7}{'dangl':>7}")
+        for r in data["realms"]:
+            print(f"{r['realm'][:44]:<46}{r['notes']:>6}{r['intra']:>7}{r['cross']:>7}{r['dangling']:>7}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--vault", default=str(Path.home() / ".claude/projects"))
+    ap.add_argument("--json", action="store_true")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("neighbors"); p.add_argument("note"); p.add_argument("--hops", type=int, default=1)
+    p = sub.add_parser("path"); p.add_argument("frm", metavar="from"); p.add_argument("to")
+    p = sub.add_parser("keystones"); p.add_argument("-n", type=int, default=12)
+    sub.add_parser("orphans")
+    sub.add_parser("realms")
+
+    a = ap.parse_args()
+    g = Graph(Path(a.vault).expanduser())
+    data = {"neighbors": cmd_neighbors, "path": cmd_path, "keystones": cmd_keystones,
+            "orphans": cmd_orphans, "realms": cmd_realms}[a.cmd](g, a)
+    print(json.dumps(data, indent=2)) if a.json else render(a.cmd, data)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
