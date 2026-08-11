@@ -1,1 +1,2 @@
 {"note": "qnap-migration", "decision": "invalidated", "reason": "status: expired; invalidated: 2026-08-10", "at": "2026-08-10"}
+{"note": "lazylibrarian", "decision": "keep", "reason": "dated note but the facts still hold (NZBgeek caps, config-overwrite behavior) \u2014 per Matt 2026-08-10; its real destiny is docs/lazylibrarian.md per the docs-over-memory amendment", "at": "2026-08-10"}
