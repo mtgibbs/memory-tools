@@ -5,34 +5,66 @@
   "showAttachments": false,
   "hideUnresolved": false,
   "showOrphans": true,
-  "collapse-color-groups": false,
+  "collapse-color-groups": true,
   "colorGroups": [
     {
-      "query": "file:feedback_ OR file:user_",
-      "color": { "a": 1, "rgb": 16766282 }
+      "query": "\"status: expired\" OR \"status: superseded\"",
+      "color": {
+        "a": 1,
+        "rgb": 6710886
+      }
+    },
+    {
+      "query": "\"type: feedback\" OR \"type: user\"",
+      "color": {
+        "a": 1,
+        "rgb": 16766282
+      }
     },
     {
       "query": "path:-Users-mtgibbs-dev-pi-cluster",
-      "color": { "a": 1, "rgb": 4890367 }
+      "color": {
+        "a": 1,
+        "rgb": 4890367
+      }
     },
     {
       "query": "path:-Users-mtgibbs-ai-research-hoa",
-      "color": { "a": 1, "rgb": 5949309 }
+      "color": {
+        "a": 1,
+        "rgb": 5949309
+      }
+    },
+    {
+      "query": "path:-Users-mtgibbs-dev-rethink-memory-and-visualization",
+      "color": {
+        "a": 1,
+        "rgb": 6247575
+      }
     },
     {
       "query": "path:-Users-mtgibbs-ai-research",
-      "color": { "a": 1, "rgb": 16751946 }
+      "color": {
+        "a": 1,
+        "rgb": 16751946
+      }
     },
     {
       "query": "path:-Users-mtgibbs-dev-mtgibbs-xyz",
-      "color": { "a": 1, "rgb": 10979322 }
+      "color": {
+        "a": 1,
+        "rgb": 10979322
+      }
     },
     {
       "query": "path:-Users-mtgibbs-dev-explore-k3s-cluster-game",
-      "color": { "a": 1, "rgb": 15218502 }
+      "color": {
+        "a": 1,
+        "rgb": 15218502
+      }
     }
   ],
-  "collapse-display": false,
+  "collapse-display": true,
   "showArrow": true,
   "textFadeMultiplier": -0.8,
   "nodeSizeMultiplier": 1.4,
@@ -42,6 +74,6 @@
   "repelStrength": 12,
   "linkStrength": 0.8,
   "linkDistance": 250,
-  "scale": 1,
-  "close": false
+  "scale": 0.19234540702907463,
+  "close": true
 }

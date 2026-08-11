@@ -50,11 +50,12 @@ cuts across realms rather than belonging to any one of them.
 | purple | mtgibbs.xyz |
 | red | explore-k3s-cluster-game |
 
-**Known limitation:** the identity-tier query matches on filename prefix, which only catches the
-pi-cluster naming convention (`feedback_drive_ops_directly`). Other realms name notes differently
-(`hoa-minutes-use-exact-values`) with no type prefix at all. Cross-realm grouping stays unreliable
-until naming is consistent — the `metadata.type` frontmatter is the real signal, and a Dataview
-query would beat a filename match here.
+**Fixed 2026-08-10 — groups key on frontmatter, not filenames.** Obsidian search matches
+frontmatter text, so the groups now query content: gold = `"type: feedback" OR "type: user"`
+(catches every naming convention, hoa included), and an ash group for
+`"status: expired" OR "status: superseded"` sits FIRST — group order is first-match-wins, so an
+invalidated note looks dead no matter what else it is. The graph now shows the same three signals
+the tools respect: realm (color band), identity tier (gold), and time (ash).
 
 ## What you will actually see today
 
