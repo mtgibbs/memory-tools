@@ -32,6 +32,7 @@ BEGIN = "<!-- inferred-links:begin -->"
 END = "<!-- inferred-links:end -->"
 INVALID = re.compile(r"^\s*status:\s*(superseded|expired)\b", re.M | re.I)
 WIKI = re.compile(r"\[\[([^\]|#]+)")
+SCORED = re.compile(r"\[\[([^\]|#]+)\]\][^\n]*?—\s*(0\.\d+)")
 MD = re.compile(r"\[[^\]]*\]\(([^)\s]+\.md)\)")
 
 
@@ -67,6 +68,9 @@ class Graph:
                 authored, _, rest = text.partition(BEGIN)
                 inferred, _, tail = rest.partition(END)
                 authored += tail
+            self.score = getattr(self, "score", {})
+            for m in SCORED.finditer(inferred):
+                self.score[(src, m.group(1).strip())] = float(m.group(2))
             for chunk, prov in ((authored, "authored"), (inferred, "inferred")):
                 for raw in WIKI.findall(chunk):
                     self._edge(src, raw.strip(), prov)
@@ -134,8 +138,12 @@ def cmd_neighbors(g: Graph, a) -> dict:
         seen |= nxt
         out["hops"][hop] = sorted(nxt)
         frontier = nxt
-    out["outbound"] = [{"to": d, "provenance": p, "resolves": d in g.realm} for d, p in g.out[node]]
-    out["inbound"] = [{"from": s, "provenance": p} for s, p in g.inn[node]]
+    stem = node.split("/")[-1]
+    def sc(a, b):
+        return g.score.get((a, b.split("/")[-1]))
+    out["outbound"] = [{"to": d, "provenance": p, "resolves": d in g.realm,
+                        "score": sc(node, d)} for d, p in g.out[node]]
+    out["inbound"] = [{"from": s, "provenance": p, "score": sc(s, node)} for s, p in g.inn[node]]
     return out
 
 
@@ -240,10 +248,12 @@ def render(cmd: str, data: dict) -> None:
         print(f"\n  outbound ({len(data['outbound'])}):")
         for e in data["outbound"]:
             flag = "" if e["resolves"] else "  ← GHOST, target does not exist"
-            print(f"    {e['provenance']:<9} -> {e['to']}{flag}")
+            w = f" ({e['score']:.2f})" if e.get("score") else ""
+            print(f"    {e['provenance']:<9}{w:<7} -> {e['to']}{flag}")
         print(f"\n  inbound ({len(data['inbound'])}):")
         for e in data["inbound"]:
-            print(f"    {e['provenance']:<9} <- {e['from']}")
+            w = f" ({e['score']:.2f})" if e.get("score") else ""
+            print(f"    {e['provenance']:<9}{w:<7} <- {e['from']}")
         for hop, names in data["hops"].items():
             if int(hop) > 1 and names:
                 print(f"\n  {hop} hops away ({len(names)}): {', '.join(names[:12])}"
