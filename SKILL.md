@@ -1,6 +1,6 @@
 ---
 name: memory-graph
-description: Search, traverse, and write the linked memory notes at ~/.claude/projects/*/memory/. Use when you need to find what you already know about something, see how two topics connect, find the most-referenced notes, or when you are about to write a new memory note. Also use when a Ralph loop's work has been accepted and its lessons should become notes.
+description: Search, traverse, and write the linked memory notes at ~/.claude/projects/*/memory/. Use when you need to find what you already know, see how topics connect, or write a new note. Also for promoting an accepted loop's lessons into notes (memory-promote), proposing constitution amendments from notes (memory-amend), and invalidating stale notes instead of deleting them (memory-stale).
 ---
 
 # The memory graph
@@ -111,6 +111,33 @@ memory-promote land --project <loop-project-dir> --write
 
 Never skip the review step. Drafts land in a review folder, not the vault, exactly so a
 failed sandbox run cannot write itself into the notes.
+
+## Proposing law from notes
+
+A note that keeps getting cited as a reason is a candidate constitution amendment.
+`memory-amend` is the queue — the human is always the gate:
+
+```bash
+memory-amend propose --constitution <repo>/specs/constitution.md   # scope auto-derives to that repo's realm
+memory-amend status --constitution ...                             # read-only view of the whole queue
+```
+
+Never accept or decline on the user's behalf. Declines are remembered forever.
+
+## Time: invalidate, never delete
+
+A note that describes a situation that ended gets a status, not deletion — later
+decisions lean on the history:
+
+```bash
+memory-stale propose        # heuristic: in-flight language + old dates; human confirms
+memory-stale status
+```
+
+Invalidated notes carry `status: expired|superseded` in frontmatter. **Respect it when
+reading:** such a note is history, not current truth — do not act on its claims, and do
+not link new notes to it. The tools already enforce this (infer skips them, amend won't
+propose them, graph labels them ⚠ EXPIRED).
 
 ## What does not belong in memory
 
