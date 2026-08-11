@@ -147,7 +147,9 @@ def cmd_propose(a) -> int:
     print(f"declined   {sum(1 for d in done.values() if d == 'declined')} remembered, never re-proposed")
     print(f"candidates {len(cands)} below coverage {a.max_coverage}\n")
 
-    REVIEW.mkdir(exist_ok=True)
+    dry = getattr(a, "dry", False)
+    if not dry:
+        REVIEW.mkdir(exist_ok=True)
     written = 0
     for r in cands:
         n = r["n"]
@@ -155,7 +157,7 @@ def cmd_propose(a) -> int:
         print(f"  {n['name']:<46} rule-lines={r['strength']:<3} covered={r['cov']:.2f}")
         for ex in r["examples"]:
             print(f"      | {ex}")
-        if path.exists():
+        if dry or path.exists():
             continue
         why = ""
         wm = re.search(r"\*\*Why:\*\*(.+?)(?:\n\n|\*\*How)", n["body"], re.S)
@@ -173,8 +175,11 @@ def cmd_propose(a) -> int:
             f"`memory-amend accept {n['name']}`\n",
             encoding="utf-8")
         written += 1
-    print(f"\nwrote {written} new drafts to {REVIEW}")
-    print("review each, then `memory-amend accept <name>` or `memory-amend decline <name>`")
+    if dry:
+        print("\nDRY — nothing written.")
+    else:
+        print(f"\nwrote {written} new drafts to {REVIEW}")
+        print("review each, then `memory-amend accept <name>` or `memory-amend decline <name>`")
     return 0
 
 
@@ -200,6 +205,52 @@ def cmd_decline(a) -> int:
     return 0
 
 
+def cmd_status(a) -> int:
+    """One view of the whole queue: waiting, decided, and what's next."""
+    now = time.time()
+    drafts = sorted(REVIEW.glob("*.md")) if REVIEW.exists() else []
+    print(f"PENDING REVIEW ({len(drafts)})" + ("" if drafts else " — queue is empty"))
+    for d in drafts:
+        age = int((now - d.stat().st_mtime) / 86400)
+        print(f"  {d.stem:<46} waiting {age}d")
+
+    done = []
+    if LEDGER.exists():
+        for line in LEDGER.read_text(encoding="utf-8").splitlines():
+            try:
+                done.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    acc = [d for d in done if d["decision"] == "accepted"]
+    dec = [d for d in done if d["decision"] == "declined"]
+    print(f"\nDECIDED ({len(acc)} accepted, {len(dec)} declined)")
+    for d in done:
+        mark = "law " if d["decision"] == "accepted" else "no  "
+        reason = (d.get("reason") or "")[:56]
+        print(f"  {mark} {d['at']}  {d['note']:<40} {reason}")
+
+    if a.constitution:
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        a2 = argparse.Namespace(constitution=a.constitution, amendments=a.amendments,
+                                vault=a.vault, types="all", max_coverage=0.30, top=999,
+                                dry=True)  # status REPORTS the queue; it must never grow it
+        with redirect_stdout(buf):
+            cmd_propose(a2)
+        fresh = [l for l in buf.getvalue().splitlines()
+                 if l.startswith("  ") and "rule-lines=" in l
+                 and not any(l.strip().startswith(d.stem) for d in drafts)]
+        print(f"\nNOT YET DRAFTED ({len(fresh)} candidates against {Path(a.constitution).name})")
+        for l in fresh[:6]:
+            print(l)
+        if len(fresh) > 6:
+            print(f"  … and {len(fresh) - 6} more — run propose to draft them")
+    else:
+        print("\n(pass --constitution to also see undrafted candidates)")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -212,6 +263,12 @@ def main() -> int:
                    help="note types to scan, comma-separated, or 'all' (default: feedback)")
     p.add_argument("--max-coverage", type=float, default=0.30)
     p.add_argument("--top", type=int, default=8)
+    p.add_argument("--dry", action="store_true", help="scan and rank only; write no drafts")
+
+    p = sub.add_parser("status")
+    p.add_argument("--constitution")
+    p.add_argument("--amendments")
+    p.add_argument("--vault", default=str(Path.home() / ".claude/projects"))
 
     for name in ("accept", "decline"):
         p = sub.add_parser(name)
@@ -219,7 +276,8 @@ def main() -> int:
         p.add_argument("--reason", default="")
 
     a = ap.parse_args()
-    return {"propose": cmd_propose, "accept": cmd_accept, "decline": cmd_decline}[a.cmd](a)
+    return {"propose": cmd_propose, "accept": cmd_accept, "decline": cmd_decline,
+            "status": cmd_status}[a.cmd](a)
 
 
 if __name__ == "__main__":
