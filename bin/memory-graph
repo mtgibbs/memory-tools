@@ -30,6 +30,7 @@ from pathlib import Path
 
 BEGIN = "<!-- inferred-links:begin -->"
 END = "<!-- inferred-links:end -->"
+INVALID = re.compile(r"^\s*status:\s*(superseded|expired)\b", re.M | re.I)
 WIKI = re.compile(r"\[\[([^\]|#]+)")
 MD = re.compile(r"\[[^\]]*\]\(([^)\s]+\.md)\)")
 
@@ -54,9 +55,13 @@ class Graph:
             node = f"{p.parts[-3]}/{p.stem}"
             self.realm[node] = p.parts[-3]
             self.by_stem[p.stem].append(node)
+        self.status: dict[str, str] = {}
         for p in paths:
             src = f"{p.parts[-3]}/{p.stem}"
             text = p.read_text(encoding="utf-8", errors="replace")
+            sm = INVALID.search(text[:600])
+            if sm:
+                self.status[src] = sm.group(1).lower()
             authored, inferred = text, ""
             if BEGIN in text:
                 authored, _, rest = text.partition(BEGIN)
@@ -118,7 +123,8 @@ def cmd_neighbors(g: Graph, a) -> dict:
     if not node:
         print(f"no note matching {a.note!r}", file=sys.stderr)
         sys.exit(1)
-    out = {"note": node, "realm": g.realm[node], "hops": {}}
+    out = {"note": node, "realm": g.realm[node], "hops": {},
+           "status": g.status.get(node)}
     seen, frontier = {node}, {node}
     for hop in range(1, a.hops + 1):
         nxt = set()
@@ -190,7 +196,8 @@ def cmd_realms(g: Graph, a) -> dict:
 
 def render(cmd: str, data: dict) -> None:
     if cmd == "neighbors":
-        print(f"{data['note']}   [{data['realm']}]")
+        flag = data.get("status")
+        print(f"{data['note']}   [{data['realm']}]" + (f"   ⚠ {flag.upper()} — history, not current" if flag else ""))
         print(f"\n  outbound ({len(data['outbound'])}):")
         for e in data["outbound"]:
             flag = "" if e["resolves"] else "  ← GHOST, target does not exist"

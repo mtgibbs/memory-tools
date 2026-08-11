@@ -25,6 +25,7 @@ import argparse, math, re, sys
 from collections import Counter
 from pathlib import Path
 
+INVALID = re.compile(r"^\s*status:\s*(superseded|expired)\b", re.M | re.I)
 BEGIN = "<!-- inferred-links:begin -->"
 END = "<!-- inferred-links:end -->"
 
@@ -139,6 +140,11 @@ def main() -> int:
         return 1
 
     notes = [Note(p, vault) for p in paths]
+    live = [n for n in notes if not INVALID.search(n.raw[:600])]
+    dropped = len(notes) - len(live)
+    if dropped and not args.quiet:
+        print(f"skipping {dropped} invalidated note(s) — history, not link targets")
+    notes = live
     build_vectors(notes)
 
     proposals: dict[int, list] = {}

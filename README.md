@@ -155,3 +155,26 @@ first — a deliberate proposal beats any volume of imperative phrasing.
 Declines persist in `state/amendment-decisions.jsonl` (append-only), so a
 rejected rule stays rejected. The tool never edits a constitution and never
 opens a PR — the PR review is the ratification, and it is yours.
+
+### `memory-stale` — invalidation, never deletion
+
+A stale note was true when written and wrong now. It gets a status, not deleted —
+later decisions lean on the history (the Zep/Graphiti bi-temporal idea):
+
+```
+status: expired | superseded
+invalidated: YYYY-MM-DD
+superseded_by: <note-name>     # superseded only
+```
+
+Git records when a note was written; this records when it stopped holding.
+Queue shape, human-gated: `propose` (heuristic: in-flight language AND newest
+mentioned date older than --age-days) → edit the proposal → `confirm` applies
+the frontmatter, or `keep` marks it live forever.
+
+The other tools respect the mark: `memory-infer` skips invalidated notes,
+`memory-amend` won't propose them as law, `memory-graph` labels them
+`⚠ EXPIRED — history, not current`.
+
+Sharp edge: `confirm`/`keep` write the global decision ledger regardless of
+--vault — don't rehearse decisions against a copy.

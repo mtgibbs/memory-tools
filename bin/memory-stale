@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""
+memory-stale — find notes describing a world that no longer exists.
+
+A stale note was true when written and wrong now, with no signal about which.
+Deletion is the wrong fix: later decisions lean on the history. So a note is
+*invalidated, not deleted* (the Zep/Graphiti bi-temporal idea): it gains a
+status in its frontmatter and stays in the graph as history.
+
+    status: expired            described a situation that ended
+    status: superseded         replaced — superseded_by names the newer note
+    invalidated: YYYY-MM-DD    when we stopped believing it
+
+Git records when a note was written; this records when it stopped holding.
+Together the vault can answer "what did we believe, and when."
+
+Queue shape, same as memory-amend — the human is the gate:
+
+  propose    scan for stale-smelling notes, write proposals to review
+  confirm    apply the proposal's frontmatter to the real note
+  keep       this note is fine — remembered forever, never re-proposed
+  status     read-only view of the queue
+
+Detection is a heuristic and says so: a note proposes only when it BOTH uses
+in-flight language ("in progress", "as of", "next:", open TODOs) AND its
+newest mentioned date is older than --age-days (default 90). Active notes
+keep fresh dates and drop out on the second test.
+"""
+
+from __future__ import annotations
+import argparse, datetime, json, re, sys, time
+from pathlib import Path
+
+TOOL_ROOT = Path(__file__).resolve().parent.parent
+REVIEW = TOOL_ROOT / "stale-review"
+LEDGER = TOOL_ROOT / "state" / "stale-decisions.jsonl"
+
+FRONT = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+DATE = re.compile(r"\b(20\d\d)-(\d\d)(?:-(\d\d))?\b")
+INFLIGHT = re.compile(
+    r"\b(in.progress|as of|currently|not yet|still needs?|pending|next:|"
+    r"TODO|OPEN:|when resuming|migration plan|待|in flight)\b", re.I)
+STATUSED = re.compile(r"^\s*status:\s*(superseded|expired)\b", re.M | re.I)
+
+
+def parse_note(p: Path) -> dict:
+    raw = p.read_text(encoding="utf-8", errors="replace")
+    m = FRONT.match(raw)
+    front = m.group(1) if m else ""
+    return {"path": p, "name": p.stem, "realm": p.parts[-3],
+            "front": front, "body": raw[m.end():] if m else raw, "raw": raw}
+
+
+def newest_date(text: str) -> datetime.date | None:
+    best = None
+    for y, mo, d in DATE.findall(text):
+        try:
+            dt = datetime.date(int(y), int(mo), int(d) if d else 28)
+        except ValueError:
+            continue
+        if best is None or dt > best:
+            best = dt
+    return best
+
+
+def decisions() -> dict[str, str]:
+    out = {}
+    if LEDGER.exists():
+        for line in LEDGER.read_text(encoding="utf-8").splitlines():
+            try:
+                d = json.loads(line)
+                out[d["note"]] = d["decision"]
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return out
+
+
+def record(note: str, decision: str, reason: str = "") -> None:
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    with LEDGER.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"note": note, "decision": decision, "reason": reason,
+                            "at": time.strftime("%Y-%m-%d")}) + "\n")
+
+
+def scan(vault: Path, age_days: int, today: datetime.date) -> list[dict]:
+    done = decisions()
+    rows = []
+    for p in sorted(vault.glob("*/memory/*.md")):
+        if p.stem == "MEMORY" or p.stem in done:
+            continue
+        n = parse_note(p)
+        if STATUSED.search(n["front"]):
+            continue  # already invalidated
+        hits = [l.strip().lstrip("-* ").strip()[:96]
+                for l in n["body"].splitlines() if INFLIGHT.search(l)]
+        if not hits:
+            continue
+        latest = newest_date(n["raw"])
+        if latest is None:
+            continue  # no dates at all — nothing to age against
+        age = (today - latest).days
+        if age < age_days:
+            continue  # recently touched in its own words — treat as live
+        rows.append({"n": n, "age": age, "latest": latest, "hits": hits[:3],
+                     "n_hits": len(hits)})
+    rows.sort(key=lambda r: -r["age"])
+    return rows
+
+
+def cmd_propose(a) -> int:
+    today = datetime.date.today()
+    rows = scan(Path(a.vault).expanduser(), a.age_days, today)
+    print(f"stale-smelling: {len(rows)} notes (in-flight language + newest date >{a.age_days}d old)\n")
+    REVIEW.mkdir(exist_ok=True)
+    written = 0
+    for r in rows[: a.top]:
+        n = r["n"]
+        print(f"  {n['name']:<44} newest date {r['latest']}  ({r['age']}d ago)  {r['n_hits']} in-flight lines")
+        for h in r["hits"]:
+            print(f"      | {h}")
+        path = REVIEW / f"{n['name']}.md"
+        if a.dry or path.exists():
+            continue
+        path.write_text(
+            f"# Stale proposal — `{n['name']}`\n\n"
+            f"Realm: {n['realm']}\n"
+            f"Newest date in note: {r['latest']} ({r['age']} days ago)\n"
+            f"In-flight lines: {r['n_hits']}\n\n"
+            f"## Evidence\n\n"
+            + "".join(f"- {h}\n" for h in r["hits"]) +
+            f"\n## Proposed frontmatter (edit before confirming)\n\n"
+            f"```\nstatus: expired\ninvalidated: {today.isoformat()}\n```\n\n"
+            f"If a newer note replaced this one, change to:\n"
+            f"```\nstatus: superseded\ninvalidated: {today.isoformat()}\nsuperseded_by: <note-name>\n```\n\n"
+            f"Then: `memory-stale confirm {n['name']}` — or `memory-stale keep {n['name']}` if it's actually live.\n",
+            encoding="utf-8")
+        written += 1
+    if a.dry:
+        print("\nDRY — nothing written.")
+    else:
+        print(f"\nwrote {written} proposals to {REVIEW}")
+    return 0
+
+
+def cmd_confirm(a) -> int:
+    prop = REVIEW / f"{a.note}.md"
+    if not prop.exists():
+        print(f"no proposal: {prop}", file=sys.stderr)
+        return 1
+    block = re.search(r"```\n(status:.*?)\n```", prop.read_text(encoding="utf-8"), re.S)
+    if not block:
+        print("proposal has no frontmatter block to apply", file=sys.stderr)
+        return 1
+    lines = block.group(1).strip().splitlines()
+
+    hits = list(Path(a.vault).expanduser().glob(f"*/memory/{a.note}.md"))
+    if len(hits) != 1:
+        print(f"expected exactly one vault note named {a.note}, found {len(hits)}", file=sys.stderr)
+        return 1
+    target = hits[0]
+    raw = target.read_text(encoding="utf-8")
+    m = FRONT.match(raw)
+    if not m:
+        print(f"{target} has no frontmatter — add the status by hand", file=sys.stderr)
+        return 1
+    new = raw[: m.end() - 4] + "\n".join(lines) + "\n---\n" + raw[m.end():]
+    target.write_text(new, encoding="utf-8")
+    record(a.note, "invalidated", "; ".join(lines))
+    prop.unlink()
+    print(f"marked {a.note}:")
+    for l in lines:
+        print(f"  {l}")
+    print(f"(vault edit — the Stop hook will commit it; git is the undo)")
+    return 0
+
+
+def cmd_keep(a) -> int:
+    record(a.note, "keep", a.reason)
+    p = REVIEW / f"{a.note}.md"
+    if p.exists():
+        p.unlink()
+    print(f"keep {a.note} — treated as live, never re-proposed"
+          + (f" (reason: {a.reason})" if a.reason else ""))
+    return 0
+
+
+def cmd_status(a) -> int:
+    props = sorted(REVIEW.glob("*.md")) if REVIEW.exists() else []
+    print(f"PENDING ({len(props)})" + ("" if props else " — queue is empty"))
+    for p in props:
+        print(f"  {p.stem}")
+    done = []
+    if LEDGER.exists():
+        for line in LEDGER.read_text(encoding="utf-8").splitlines():
+            try:
+                done.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    inv = sum(1 for d in done if d["decision"] == "invalidated")
+    print(f"\nDECIDED ({inv} invalidated, {len(done)-inv} kept)")
+    for d in done:
+        mark = "dead" if d["decision"] == "invalidated" else "live"
+        print(f"  {mark}  {d['at']}  {d['note']:<42} {(d.get('reason') or '')[:52]}")
+    rows = scan(Path(a.vault).expanduser(), a.age_days, datetime.date.today())
+    fresh = [r for r in rows if not (REVIEW / f"{r['n']['name']}.md").exists()]
+    print(f"\nNOT YET PROPOSED ({len(fresh)})")
+    for r in fresh[:6]:
+        print(f"  {r['n']['name']:<44} newest date {r['latest']} ({r['age']}d)")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--vault", default=str(Path.home() / ".claude/projects"))
+    ap.add_argument("--age-days", type=int, default=90)
+    sub = ap.add_parsers = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("propose"); p.add_argument("--top", type=int, default=8)
+    p.add_argument("--dry", action="store_true")
+    p = sub.add_parser("confirm"); p.add_argument("note")
+    p = sub.add_parser("keep"); p.add_argument("note"); p.add_argument("--reason", default="")
+    sub.add_parser("status")
+    a = ap.parse_args()
+    return {"propose": cmd_propose, "confirm": cmd_confirm,
+            "keep": cmd_keep, "status": cmd_status}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

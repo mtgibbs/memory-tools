@@ -29,6 +29,7 @@ REVIEW = TOOL_ROOT / "amendment-review"
 LEDGER = TOOL_ROOT / "state" / "amendment-decisions.jsonl"
 
 FRONT = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+INVALID = re.compile(r"^\s*status:\s*(superseded|expired)\b", re.M | re.I)
 # What makes a line read like a rule rather than a fact or a diary entry.
 IMPERATIVE = re.compile(
     r"\b(never|always|must|do not|don't|prefer|require[sd]?|only|before any|"
@@ -160,6 +161,8 @@ def cmd_propose(a) -> int:
         if not in_scope(p.parts[-3], scope):
             continue
         n = read_note(p)
+        if n["meta"].get("status", "").lower() in ("superseded", "expired"):
+            continue  # invalidated notes are history, not law candidates
         ntype = n["meta"].get("type", "")
         if a.types != "all" and ntype not in a.types.split(","):
             continue
