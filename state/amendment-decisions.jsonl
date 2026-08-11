@@ -1,1 +1,5 @@
 {"note": "reference_loop_library", "decision": "accepted", "reason": "self-proving gates ratified 2026-08-10, landing as first amendment", "at": "2026-08-10"}
+{"note": "project_youtube_blackout", "decision": "declined", "reason": "project state, not standing law \u2014 rules here are specific to one initiative", "at": "2026-08-10"}
+{"note": "project_triggerable_judge", "decision": "declined", "reason": "project state \u2014 its durable rules (human merges, judge never auto-merges) are already constitution PR-gating", "at": "2026-08-10"}
+{"note": "redesign-v6-state", "decision": "declined", "reason": "shipped-work diary for mtgibbs-xyz \u2014 nothing here binds future agents", "at": "2026-08-10"}
+{"note": "beelink-ai-stack", "decision": "declined", "reason": "infrastructure reference \u2014 belongs in ARCHITECTURE.md decisions, not the constitution", "at": "2026-08-10"}
