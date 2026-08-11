@@ -5,3 +5,4 @@
 {"note": "beelink-ai-stack", "decision": "declined", "reason": "infrastructure reference \u2014 belongs in ARCHITECTURE.md decisions, not the constitution", "at": "2026-08-10"}
 {"note": "lazylibrarian", "decision": "declined", "reason": "service config gotchas for one stack \u2014 durable home is docs/lazylibrarian.md, which MEMORY.md already points at; nothing here binds all agents", "at": "2026-08-10"}
 {"note": "qnap-migration", "decision": "declined", "reason": "completed-migration record (cutover done 2026-04-30) \u2014 historical project state; its durable lessons live in docs/recaps; also stale: written mid-migration", "at": "2026-08-10"}
+{"note": "feedback_docs_over_memory", "decision": "accepted", "reason": "ratified as amendment #2 \u2014 the rule behind all six declines", "at": "2026-08-10"}
