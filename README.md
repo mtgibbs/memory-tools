@@ -1,5 +1,11 @@
 # memory-tools
 
+Five small commands that turn a directory of markdown notes into a linked,
+time-aware memory graph for coding agents. Extracted live from a working
+setup — the decision ledgers in `state/` and the tuning stories in the code
+comments are left in on purpose: they are part of the explanation, not
+accidents. One person's real corpus shaped every threshold in here.
+
 Three small commands for the Claude Code memory vault at `~/.claude/projects/*/memory/`.
 
 No dependencies. Python 3 standard library only. Nothing runs in the background, nothing
