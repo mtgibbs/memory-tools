@@ -129,3 +129,23 @@ folders was only ever a matter of where you pointed it.
 
 `memory-infer` rewrites dozens of files. Running it every session would churn the whole
 vault and flood the auto-commit hook. It is a background pass, not an inline step.
+
+### `memory-amend` — the Rule Proposer
+
+A constitution is founding intent — it does not morph. Change arrives as
+**amendments**: proposed from the notes, ratified by a human, appended as a
+separate vessel. (Terms per GitHub spec-kit's constitution workflow and the
+MAC paper's Rule Proposer role; the ratifier here stays human on purpose.)
+
+```bash
+memory-amend propose --constitution <repo>/specs/constitution.md
+# review drafts in amendment-review/, then per candidate:
+memory-amend accept <note>    # prints the block to PR into specs/amendments.md
+memory-amend decline <note>   # remembered forever — never proposed again
+```
+
+Notes that *explicitly* say "propose as a constitution upgrade" always rank
+first — an deliberate proposal beats any volume of imperative phrasing.
+Declines persist in `state/amendment-decisions.jsonl` (append-only), so a
+rejected rule stays rejected. The tool never edits a constitution and never
+opens a PR — the PR review is the ratification, and it is yours.

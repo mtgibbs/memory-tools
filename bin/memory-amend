@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""
+memory-amend — the Rule Proposer: notes in, candidate amendments out.
+
+A constitution is founding intent. It does not morph. Change arrives as
+amendments — proposed, ratified by a human, appended as a separate vessel.
+(Vocabulary per GitHub spec-kit and the MAC paper's Rule Proposer role; the
+ratifier here is deliberately the human, not another agent.)
+
+This tool finds notes that read like rules but have no counterpart in the
+constitution, and drafts candidate amendments for review. It never edits the
+constitution, never opens a PR, never touches the target repo.
+
+  propose   scan the notes, write candidate drafts to the review folder
+  accept    record the decision, print the amendment block ready to paste
+  decline   record the decision so the candidate is never proposed again
+
+Declines are remembered forever (state/amendment-decisions.jsonl, append-only).
+A rejected rule staying rejected is what makes proposing cheap.
+"""
+
+from __future__ import annotations
+import argparse, json, math, re, sys, time
+from collections import Counter
+from pathlib import Path
+
+TOOL_ROOT = Path(__file__).resolve().parent.parent
+REVIEW = TOOL_ROOT / "amendment-review"
+LEDGER = TOOL_ROOT / "state" / "amendment-decisions.jsonl"
+
+FRONT = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+# What makes a line read like a rule rather than a fact or a diary entry.
+IMPERATIVE = re.compile(
+    r"\b(never|always|must|do not|don't|prefer|require[sd]?|only|before any|"
+    r"instead of|rule:|gate[d]? (at|on)|no [a-z]+ (without|until))\b", re.I)
+# A note that literally says "this should become a constitution rule" is the
+# strongest possible candidate — stronger than any imperative phrasing. The
+# first real customer (self-proving gates, reference_loop_library) was phrased
+# exactly this way and the imperative filter missed it entirely.
+PROPOSAL = re.compile(r"propose[d]?\s+as\s+a\s+constitution|constitution\s+[a-z.-]*\s*upgrade|"
+                      r"should\s+be\s+(a\s+)?(rule|amendment|law)|add\s+to\s+the\s+constitution", re.I)
+TOKEN = re.compile(r"[a-z][a-z0-9_-]{2,}")
+STOP = set("the a an and or of to in for is are was be with that this it on as at by "
+           "from not no we our you your when what how why then than into over under".split())
+
+
+def tokens(text: str) -> list[str]:
+    return [t for t in TOKEN.findall(text.lower()) if t not in STOP]
+
+
+def read_note(p: Path) -> dict | None:
+    raw = p.read_text(encoding="utf-8", errors="replace")
+    m = FRONT.match(raw)
+    meta = {}
+    if m:
+        for line in m.group(1).splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                meta[k.strip()] = v.strip().strip('"')
+    body = raw[m.end():] if m else raw
+    return {"path": p, "name": p.stem, "realm": p.parts[-3], "meta": meta, "body": body}
+
+
+def rule_score(body: str) -> tuple[int, list[str]]:
+    """How much does this note read like standing law? Imperative lines count 1;
+    explicit 'this should be a constitution rule' lines count 5 and sort first."""
+    imp, prop = [], []
+    for line in body.splitlines():
+        clean = line.strip().lstrip("-* ").strip()[:100]
+        if PROPOSAL.search(line):
+            prop.append("[PROPOSAL] " + clean)
+        elif IMPERATIVE.search(line):
+            imp.append(clean)
+    return len(imp) + 5 * len(prop), (prop + imp)[:3]
+
+
+def coverage(note_body: str, law_vec: Counter, law_norm: float) -> float:
+    """Cosine overlap between the note and the existing law text. High = already covered."""
+    tf = Counter(tokens(note_body))
+    if not tf or not law_vec:
+        return 0.0
+    dot = sum(c * law_vec[t] for t, c in tf.items() if t in law_vec)
+    norm = math.sqrt(sum(c * c for c in tf.values())) * law_norm
+    return dot / norm if norm else 0.0
+
+
+def decisions() -> dict[str, str]:
+    out = {}
+    if LEDGER.exists():
+        for line in LEDGER.read_text(encoding="utf-8").splitlines():
+            try:
+                d = json.loads(line)
+                out[d["note"]] = d["decision"]
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return out
+
+
+def record(note: str, decision: str, reason: str = "") -> None:
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    with LEDGER.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"note": note, "decision": decision, "reason": reason,
+                            "at": time.strftime("%Y-%m-%d")}) + "\n")
+
+
+def cmd_propose(a) -> int:
+    law_paths = [Path(a.constitution).expanduser()]
+    if a.amendments:
+        law_paths.append(Path(a.amendments).expanduser())
+    law_text = ""
+    for p in law_paths:
+        if p.exists():
+            law_text += p.read_text(encoding="utf-8", errors="replace") + "\n"
+    if not law_text:
+        print(f"no constitution found at {law_paths[0]}", file=sys.stderr)
+        return 1
+    law_vec = Counter(tokens(law_text))
+    law_norm = math.sqrt(sum(c * c for c in law_vec.values()))
+
+    vault = Path(a.vault).expanduser()
+    done = decisions()
+    rows = []
+    for p in sorted(vault.glob("*/memory/*.md")):
+        if p.stem == "MEMORY":
+            continue
+        n = read_note(p)
+        ntype = n["meta"].get("type", "")
+        if a.types != "all" and ntype not in a.types.split(","):
+            continue
+        if n["name"] in done:
+            continue
+        strength, examples = rule_score(n["body"])
+        if strength == 0:
+            continue
+        cov = coverage(n["body"], law_vec, law_norm)
+        has_prop = any(e.startswith("[PROPOSAL]") for e in examples)
+        rows.append({"n": n, "strength": strength, "cov": cov,
+                     "examples": examples, "prop": has_prop})
+
+    # An explicit "make this a constitution rule" beats ANY volume of
+    # imperative phrasing — a 30-line project-status note is not more
+    # rule-worthy than a one-line deliberate proposal.
+    rows.sort(key=lambda r: (-r["prop"], -r["strength"] * (1 - r["cov"])))
+    cands = [r for r in rows if r["cov"] < a.max_coverage][: a.top]
+
+    print(f"scanned    {len(rows)} rule-like notes (types: {a.types})")
+    print(f"declined   {sum(1 for d in done.values() if d == 'declined')} remembered, never re-proposed")
+    print(f"candidates {len(cands)} below coverage {a.max_coverage}\n")
+
+    REVIEW.mkdir(exist_ok=True)
+    written = 0
+    for r in cands:
+        n = r["n"]
+        path = REVIEW / f"{n['name']}.md"
+        print(f"  {n['name']:<46} rule-lines={r['strength']:<3} covered={r['cov']:.2f}")
+        for ex in r["examples"]:
+            print(f"      | {ex}")
+        if path.exists():
+            continue
+        why = ""
+        wm = re.search(r"\*\*Why:\*\*(.+?)(?:\n\n|\*\*How)", n["body"], re.S)
+        if wm:
+            why = wm.group(1).strip()
+        path.write_text(
+            f"# Candidate amendment — from `{n['name']}`\n\n"
+            f"Status: Proposed\n"
+            f"Source: {n['realm']}/{n['name']}\n"
+            f"Suggested bump: MINOR (new principle)\n\n"
+            f"## Rationale\n\n{why or '(fill in — why should every agent follow this?)'}\n\n"
+            f"## Proposed rule\n\n"
+            f"{n['meta'].get('description', '')}\n\n"
+            f"---\n*Edit the rule text to constitution register (short, imperative), then:*\n"
+            f"`memory-amend accept {n['name']}`\n",
+            encoding="utf-8")
+        written += 1
+    print(f"\nwrote {written} new drafts to {REVIEW}")
+    print("review each, then `memory-amend accept <name>` or `memory-amend decline <name>`")
+    return 0
+
+
+def cmd_accept(a) -> int:
+    draft = REVIEW / f"{a.note}.md"
+    if not draft.exists():
+        print(f"no draft: {draft}", file=sys.stderr)
+        return 1
+    record(a.note, "accepted", a.reason)
+    print(draft.read_text(encoding="utf-8"))
+    print("--- recorded as accepted. Paste the rule into specs/amendments.md via a PR;")
+    print("    the PR review IS the ratification. Then delete the draft.")
+    return 0
+
+
+def cmd_decline(a) -> int:
+    record(a.note, "declined", a.reason)
+    draft = REVIEW / f"{a.note}.md"
+    if draft.exists():
+        draft.unlink()
+    print(f"declined {a.note} — will never be proposed again"
+          + (f" (reason: {a.reason})" if a.reason else ""))
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("propose")
+    p.add_argument("--constitution", required=True)
+    p.add_argument("--amendments", help="existing amendments file, counts as law")
+    p.add_argument("--vault", default=str(Path.home() / ".claude/projects"))
+    p.add_argument("--types", default="feedback",
+                   help="note types to scan, comma-separated, or 'all' (default: feedback)")
+    p.add_argument("--max-coverage", type=float, default=0.30)
+    p.add_argument("--top", type=int, default=8)
+
+    for name in ("accept", "decline"):
+        p = sub.add_parser(name)
+        p.add_argument("note")
+        p.add_argument("--reason", default="")
+
+    a = ap.parse_args()
+    return {"propose": cmd_propose, "accept": cmd_accept, "decline": cmd_decline}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
