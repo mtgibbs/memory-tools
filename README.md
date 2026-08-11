@@ -144,8 +144,14 @@ memory-amend accept <note>    # prints the block to PR into specs/amendments.md
 memory-amend decline <note>   # remembered forever — never proposed again
 ```
 
+**Scope is derived, not configured:** a constitution is a realm's own law, so by
+default only notes from the repo's own vault realm (worktree checkouts included)
+may propose against it. HOA notes can't leak into pi-cluster's queue because they
+were never in scope — absence, not filtering. `--realm <slug>` overrides,
+`--all-realms` opts out explicitly and says so in the output.
+
 Notes that *explicitly* say "propose as a constitution upgrade" always rank
-first — an deliberate proposal beats any volume of imperative phrasing.
+first — a deliberate proposal beats any volume of imperative phrasing.
 Declines persist in `state/amendment-decisions.jsonl` (append-only), so a
 rejected rule stays rejected. The tool never edits a constitution and never
 opens a PR — the PR review is the ratification, and it is yours.

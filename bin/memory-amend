@@ -103,6 +103,39 @@ def record(note: str, decision: str, reason: str = "") -> None:
                             "at": time.strftime("%Y-%m-%d")}) + "\n")
 
 
+def realm_slug(path: Path) -> str:
+    """The harness's vault-folder name for a repo path: /a/b.c -> -a-b-c."""
+    return "-" + str(path.resolve()).lstrip("/").replace("/", "-").replace(".", "-")
+
+
+def scope_realms(a) -> list[str] | None:
+    """Which realms may propose against this constitution. None = all (explicit opt-out).
+    Default: the realm of the repo the constitution lives in — a constitution is a
+    realm's own law, so only its own notes are candidates. Absence, not filtering."""
+    if getattr(a, "all_realms", False):
+        return None
+    if getattr(a, "realm", None):
+        return list(a.realm)
+    import subprocess
+    cdir = Path(a.constitution).expanduser().resolve().parent
+    try:
+        root = subprocess.run(["git", "-C", str(cdir), "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        root = ""
+    if not root:
+        root = str(cdir.parent if cdir.name == "specs" else cdir)
+    return [realm_slug(Path(root))]
+
+
+def in_scope(realm: str, scope: list[str] | None) -> bool:
+    if scope is None:
+        return True
+    # a repo's worktree checkouts get derived slugs like <realm>--claude-worktrees-…;
+    # they are the same repo, so the same law applies.
+    return any(realm == r or realm.startswith(r + "--") for r in scope)
+
+
 def cmd_propose(a) -> int:
     law_paths = [Path(a.constitution).expanduser()]
     if a.amendments:
@@ -118,10 +151,13 @@ def cmd_propose(a) -> int:
     law_norm = math.sqrt(sum(c * c for c in law_vec.values()))
 
     vault = Path(a.vault).expanduser()
+    scope = scope_realms(a)
     done = decisions()
     rows = []
     for p in sorted(vault.glob("*/memory/*.md")):
         if p.stem == "MEMORY":
+            continue
+        if not in_scope(p.parts[-3], scope):
             continue
         n = read_note(p)
         ntype = n["meta"].get("type", "")
@@ -143,6 +179,7 @@ def cmd_propose(a) -> int:
     rows.sort(key=lambda r: (-r["prop"], -r["strength"] * (1 - r["cov"])))
     cands = [r for r in rows if r["cov"] < a.max_coverage][: a.top]
 
+    print(f"scope      {'ALL realms (explicit)' if scope is None else ', '.join(scope)}")
     print(f"scanned    {len(rows)} rule-like notes (types: {a.types})")
     print(f"declined   {sum(1 for d in done.values() if d == 'declined')} remembered, never re-proposed")
     print(f"candidates {len(cands)} below coverage {a.max_coverage}\n")
@@ -235,7 +272,9 @@ def cmd_status(a) -> int:
         buf = io.StringIO()
         a2 = argparse.Namespace(constitution=a.constitution, amendments=a.amendments,
                                 vault=a.vault, types="all", max_coverage=0.30, top=999,
-                                dry=True)  # status REPORTS the queue; it must never grow it
+                                dry=True,  # status REPORTS the queue; it must never grow it
+                                realm=getattr(a, "realm", None),
+                                all_realms=getattr(a, "all_realms", False))
         with redirect_stdout(buf):
             cmd_propose(a2)
         fresh = [l for l in buf.getvalue().splitlines()
@@ -264,10 +303,15 @@ def main() -> int:
     p.add_argument("--max-coverage", type=float, default=0.30)
     p.add_argument("--top", type=int, default=8)
     p.add_argument("--dry", action="store_true", help="scan and rank only; write no drafts")
+    p.add_argument("--realm", action="append",
+                   help="realm slug allowed to propose (repeatable); default: derived from the constitution's repo")
+    p.add_argument("--all-realms", action="store_true", help="explicitly scan every realm")
 
     p = sub.add_parser("status")
     p.add_argument("--constitution")
     p.add_argument("--amendments")
+    p.add_argument("--realm", action="append")
+    p.add_argument("--all-realms", action="store_true")
     p.add_argument("--vault", default=str(Path.home() / ".claude/projects"))
 
     for name in ("accept", "decline"):
