@@ -194,6 +194,45 @@ def cmd_realms(g: Graph, a) -> dict:
     return {"realms": [{"realm": k, **v} for k, v in sorted(agg.items(), key=lambda kv: -kv[1]["notes"])]}
 
 
+def cmd_brief(g: Graph, a) -> dict:
+    """A §6-ready block: the map's most relevant notes for a spec being written.
+    This is how loops read the map — at authoring time, pushed into the spec,
+    never pulled at run time. Invalidated notes are excluded: history must not
+    brief new work."""
+    terms = [t.lower() for t in a.terms]
+    scored = []
+    for node, realm in g.realm.items():
+        if node in g.status or node.split("/")[-1] == "MEMORY":
+            continue
+        path = g.vault / realm / "memory" / (node.split("/")[-1] + ".md")
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        desc = ""
+        dm = re.search(r'^description:\s*["\']?(.+?)["\']?$', raw[:600], re.M)
+        if dm:
+            desc = dm.group(1)
+        low = raw.lower()
+        score = sum(3 * desc.lower().count(t) + low.count(t) for t in terms)
+        if score == 0:
+            continue
+        best = ""
+        for line in raw.splitlines():
+            ll = line.lower()
+            n = sum(ll.count(t) for t in terms)
+            skip = line.startswith(("---", "description:")) or line.strip().startswith("[[")
+            if n > 0 and len(line.strip()) > 20 and not skip:
+                if not best or n > sum(best.lower().count(t) for t in terms):
+                    best = line.strip().lstrip("-*# ").strip()
+        neighbors = [d.split("/")[-1] for d, prov in g.out[node]
+                     if prov == "authored" and d in g.realm][:3]
+        scored.append({"note": node.split("/")[-1], "realm": realm, "score": score,
+                       "description": desc, "line": best[:160], "authored_links": neighbors})
+    scored.sort(key=lambda r: -r["score"])
+    return {"query": " ".join(a.terms), "briefs": scored[: a.n]}
+
+
 def render(cmd: str, data: dict) -> None:
     if cmd == "neighbors":
         flag = data.get("status")
@@ -209,6 +248,16 @@ def render(cmd: str, data: dict) -> None:
             if int(hop) > 1 and names:
                 print(f"\n  {hop} hops away ({len(names)}): {', '.join(names[:12])}"
                       + (" …" if len(names) > 12 else ""))
+    elif cmd == "brief":
+        print(f"<!-- memory-brief · query: {data['query']} · point-in-time, verify before trusting -->")
+        print("**Prior knowledge from the memory map:**\n")
+        for b in data["briefs"]:
+            links = f" · links: {', '.join(b['authored_links'])}" if b["authored_links"] else ""
+            print(f"- **{b['note']}**{links}\n  {b['description']}")
+            if b["line"] and b["line"].lower() != b["description"].lower():
+                print(f"  > {b['line']}")
+        if not data["briefs"]:
+            print("- (no matching notes — the map has nothing on this yet)")
     elif cmd == "path":
         if not data.get("path"):
             print(f"{data['from']}  ⇸  {data['to']}\n  {data['note']}")
@@ -239,13 +288,14 @@ def main() -> int:
     p = sub.add_parser("neighbors"); p.add_argument("note"); p.add_argument("--hops", type=int, default=1)
     p = sub.add_parser("path"); p.add_argument("frm", metavar="from"); p.add_argument("to")
     p = sub.add_parser("keystones"); p.add_argument("-n", type=int, default=12)
+    p = sub.add_parser("brief"); p.add_argument("terms", nargs="+"); p.add_argument("-n", type=int, default=5)
     sub.add_parser("orphans")
     sub.add_parser("realms")
 
     a = ap.parse_args()
     g = Graph(Path(a.vault).expanduser())
     data = {"neighbors": cmd_neighbors, "path": cmd_path, "keystones": cmd_keystones,
-            "orphans": cmd_orphans, "realms": cmd_realms}[a.cmd](g, a)
+            "orphans": cmd_orphans, "realms": cmd_realms, "brief": cmd_brief}[a.cmd](g, a)
     print(json.dumps(data, indent=2)) if a.json else render(a.cmd, data)
     return 0
 

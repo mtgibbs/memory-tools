@@ -33,6 +33,18 @@ Add `--json` when you want to process the result.
 `memory-graph neighbors` is the one to reach for most. Reading a note file shows what it
 points at; it cannot show what points at it. Backlinks only come from this.
 
+## Briefing a spec (how loops read the map)
+
+Before writing a spec's "prior decisions / facts" section, ask the map:
+
+```bash
+memory-graph brief <topic terms>
+```
+
+Curate the output into the spec. This is the ONLY way loop work consumes the map —
+pushed in at authoring time, never pulled at run time. Invalidated notes are
+excluded automatically.
+
 ## Authored vs inferred — this matters
 
 Every link is tagged:

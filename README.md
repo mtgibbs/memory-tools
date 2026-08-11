@@ -178,3 +178,18 @@ The other tools respect the mark: `memory-infer` skips invalidated notes,
 
 Sharp edge: `confirm`/`keep` write the global decision ledger regardless of
 --vault — don't rehearse decisions against a copy.
+
+### `memory-graph brief` — how loops read the map
+
+Loops never pull from the map at run time. They read it through the spec: §6
+("prior decisions / facts the implementer must know") gets filled at authoring
+time, and every fresh iteration reads it as part of the spec. `brief` generates
+that block:
+
+```bash
+memory-graph brief verify gate false-green   # §6-ready markdown, top 5 notes
+```
+
+Ranked by term match, authored links listed, invalidated notes excluded —
+history must not brief new work. Curate before pasting; it's a draft, not an
+oracle, and it says so in its own header comment.
