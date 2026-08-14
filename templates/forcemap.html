@@ -29,7 +29,7 @@ html,body{margin:0;height:100%;background:#101014;overflow:hidden;font:12px -app
  <span class="sw" style="background:#ffd54a"></span>identity note (user / feedback)<br>
  <span class="sw" style="background:#b585f0"></span>boundary link (personal &#8646; work)<br>
  <span class="sw" style="background:#7a7a80"></span>expired / superseded<br>
- <span class="sw" style="background:none;border:2px solid #6fc06f;width:7px;height:7px"></span>ring = gate; its color names the realm it jumps to<br>
+ <span class="sw" style="background:none;border:2px solid #6fc06f;width:7px;height:7px"></span>ring = gate across the corridor; its color names the far realm<br>
  drag nodes &middot; drag background to pan &middot; scroll to zoom &middot; click opens in Obsidian
 </div>
 <div id="panels">
@@ -61,13 +61,14 @@ const SLIDERS = [
 ];
 
 // connection counts drive size and mass; adjacency drives hover highlighting;
-// gates are nodes with cross-realm links — accented with rings colored by destination
+// gates are nodes whose links cross the personal/work corridor — another galaxy,
+// not a neighboring solar system. Same-side cross-realm hops get no ring.
 N.forEach(n => { n.conn = 0; n.adj = new Set(); n.gates = new Set(); });
 E.forEach(e => {
   const a = N[e.s], b = N[e.t];
   a.conn++; b.conn++;
   a.adj.add(e.t); b.adj.add(e.s);
-  if (a.realm !== b.realm) { a.gates.add(b.realm); b.gates.add(a.realm); }
+  if (a.work !== b.work) { a.gates.add(b.realm); b.gates.add(a.realm); }
 });
 // stable accent hue per realm, hashed from the name so rebuilds never reshuffle
 function hueOf(s) {
