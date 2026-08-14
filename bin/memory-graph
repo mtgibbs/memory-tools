@@ -20,6 +20,7 @@ accordingly — an inferred link is a suggestion, not an assertion.
   graph.py orphans                       notes nothing reaches
   graph.py realms                        per-realm connectivity summary
   graph.py canvas [--out FILE]           realm zones as an Obsidian .canvas file
+  graph.py forcemap [--out FILE]         force-directed map with realm forcefields (HTML)
 
 Add --json to any subcommand for machine-readable output.
 """
@@ -329,6 +330,62 @@ def cmd_canvas(g: Graph, a) -> dict:
             "boundary_edges": n_boundary}
 
 
+TYPE_RE = re.compile(r"^\s*type:\s*(user|feedback)\b", re.M | re.I)
+
+
+def cmd_forcemap(g: Graph, a) -> dict:
+    """The force graph with forcefields: a self-contained HTML page (Canvas 2D,
+    no dependencies, harness-console lineage). Real physics — springs, repulsion —
+    but every node is also pulled toward its realm's anchor, so realms hold
+    together as visible fields: personal wells left, work-- wells right, the
+    corridor between them kept empty by design (boundary springs are weak on
+    purpose). Data is embedded at generation time; regenerate when the vault
+    moves. Clicking a node opens it in Obsidian via the obsidian:// URI."""
+    def short(slug: str) -> str:
+        s = slug.removeprefix("work--").removeprefix("-Users-mtgibbs-")
+        return s or slug
+
+    nodes, index = [], {}
+    for node, realm in sorted(g.realm.items()):
+        stem = node.split("/")[-1]
+        if stem == "MEMORY":
+            continue
+        path = g.vault / realm / "memory" / (stem + ".md")
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:600]
+        except OSError:
+            head = ""
+        index[node] = len(nodes)
+        nodes.append({"stem": stem, "realm": realm, "short": short(realm),
+                      "work": realm.startswith("work--"),
+                      "gold": bool(TYPE_RE.search(head)),
+                      "dead": node in g.status,
+                      "deg": len(g.inn[node])})
+
+    pairs: dict[frozenset, dict] = {}
+    for src in index:
+        for dst, _ in g.out[src]:
+            if dst not in index or dst == src:
+                continue
+            same = g.realm[src] == g.realm[dst]
+            boundary = nodes[index[src]]["work"] != nodes[index[dst]]["work"]
+            pairs.setdefault(frozenset([src, dst]),
+                             {"s": index[src], "t": index[dst],
+                              "i": int(same), "b": int(boundary)})
+    edges = list(pairs.values())
+
+    data = json.dumps({"vault": g.vault.name, "nodes": nodes, "edges": edges}
+                      ).replace("</", "<\\/")
+    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "forcemap.html"
+    tpl = tpl_path.read_text(encoding="utf-8")
+    assert tpl.count("__DATA__") == 1, f"placeholder missing in {tpl_path}"
+    out = Path(a.out).expanduser() if a.out else g.vault / "atlas.html"
+    out.write_text(tpl.replace("__DATA__", data))
+    return {"forcemap": str(out), "notes": len(nodes), "edges": len(edges),
+            "boundary_edges": sum(e["b"] for e in edges),
+            "identity_notes": sum(1 for n in nodes if n["gold"])}
+
+
 def render(cmd: str, data: dict) -> None:
     if cmd == "neighbors":
         flag = data.get("status")
@@ -379,6 +436,10 @@ def render(cmd: str, data: dict) -> None:
         print(f"{data['canvas']}: {data['notes']} notes, {data['zones']} zones, "
               f"{data['cross_realm_edges']} cross-realm edges "
               f"({data['boundary_edges']} boundary, purple)")
+    elif cmd == "forcemap":
+        print(f"{data['forcemap']}: {data['notes']} notes, {data['edges']} edges "
+              f"({data['boundary_edges']} boundary), {data['identity_notes']} identity — "
+              f"open in a browser")
 
 
 def main() -> int:
@@ -394,12 +455,13 @@ def main() -> int:
     sub.add_parser("orphans")
     sub.add_parser("realms")
     p = sub.add_parser("canvas"); p.add_argument("--out", default=None)
+    p = sub.add_parser("forcemap"); p.add_argument("--out", default=None)
 
     a = ap.parse_args()
     g = Graph(Path(a.vault).expanduser())
     data = {"neighbors": cmd_neighbors, "path": cmd_path, "keystones": cmd_keystones,
             "orphans": cmd_orphans, "realms": cmd_realms, "brief": cmd_brief,
-            "canvas": cmd_canvas}[a.cmd](g, a)
+            "canvas": cmd_canvas, "forcemap": cmd_forcemap}[a.cmd](g, a)
     print(json.dumps(data, indent=2)) if a.json else render(a.cmd, data)
     return 0
 

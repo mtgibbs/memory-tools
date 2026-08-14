@@ -27,11 +27,16 @@ memory-graph keystones                      # the notes everything points at
 memory-graph orphans                        # notes nothing reaches
 memory-graph realms                         # per-folder summary
 memory-graph canvas                         # write <vault>/atlas.canvas — realm zones for Obsidian
+memory-graph forcemap                       # write <vault>/atlas.html — force graph with realm forcefields
 ```
 
-`canvas` draws each realm as a labeled zone box (work-- realms red, on the right),
-with only cross-realm edges shown; personal↔work boundary edges are purple. It is a
-snapshot — regenerate after the vault changes. It writes one file and nothing else.
+Both are snapshots — regenerate after the vault changes; each writes one file and
+nothing else. `forcemap` is the readable one: real physics, but every node is pulled
+toward its realm's anchor, so realms hold together as tinted fields (work-- red/right,
+personal blue/left, boundary links purple, identity notes gold). Open the HTML in a
+browser; clicking a node opens it in Obsidian. `canvas` is the same data as rigid
+labeled boxes. Caution: a generated `.canvas` embeds every note, so Obsidian's graph
+view shows it as a fake hub — filter it out with `-path:"atlas.canvas"`.
 
 Add `--json` when you want to process the result.
 
