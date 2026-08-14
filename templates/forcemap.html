@@ -29,6 +29,7 @@ html,body{margin:0;height:100%;background:#101014;overflow:hidden;font:12px -app
  <span class="sw" style="background:#ffd54a"></span>identity note (user / feedback)<br>
  <span class="sw" style="background:#b585f0"></span>boundary link (personal &#8646; work)<br>
  <span class="sw" style="background:#7a7a80"></span>expired / superseded<br>
+ <span class="sw" style="background:none;border:2px solid #6fc06f;width:7px;height:7px"></span>ring = gate; its color names the realm it jumps to<br>
  drag nodes &middot; drag background to pan &middot; scroll to zoom &middot; click opens in Obsidian
 </div>
 <div id="panels">
@@ -45,7 +46,8 @@ const GA = 2.39996323; // golden angle
 
 // ---- tunable forces -------------------------------------------------------
 const DEFAULTS = { repel: 2200, field: 0.04, linkDist: 220, linkK: 1, corridor: 900,
-                   nodeSize: 1, weight: 1, labels: "hover", realmLabels: true };
+                   nodeSize: 1, weight: 1, labels: "hover", realmLabels: true,
+                   gateRings: true };
 const P = { ...DEFAULTS };
 try { Object.assign(P, JSON.parse(localStorage.getItem("forcemap-params") || "{}")); } catch (e) {}
 const SLIDERS = [
@@ -58,19 +60,29 @@ const SLIDERS = [
   ["weight",   "hub weight",    0,   2,    0.05, v => v.toFixed(2)],
 ];
 
-// connection counts drive size and mass; adjacency drives hover highlighting
-N.forEach(n => { n.conn = 0; n.adj = new Set(); });
+// connection counts drive size and mass; adjacency drives hover highlighting;
+// gates are nodes with cross-realm links — accented with rings colored by destination
+N.forEach(n => { n.conn = 0; n.adj = new Set(); n.gates = new Set(); });
 E.forEach(e => {
-  N[e.s].conn++; N[e.t].conn++;
-  N[e.s].adj.add(e.t); N[e.t].adj.add(e.s);
+  const a = N[e.s], b = N[e.t];
+  a.conn++; b.conn++;
+  a.adj.add(e.t); b.adj.add(e.s);
+  if (a.realm !== b.realm) { a.gates.add(b.realm); b.gates.add(a.realm); }
 });
+// stable accent hue per realm, hashed from the name so rebuilds never reshuffle
+function hueOf(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
 
 // ---- realm anchors: pack each side, keep the corridor empty ---------------
 const realms = new Map();
 N.forEach((n, i) => {
   n.i = i;
   if (!realms.has(n.realm))
-    realms.set(n.realm, { name: n.realm, short: n.short, work: n.work, members: [] });
+    realms.set(n.realm, { name: n.realm, short: n.short, work: n.work,
+                          hue: hueOf(n.realm), members: [] });
   realms.get(n.realm).members.push(n);
 });
 const R = [...realms.values()];
@@ -175,10 +187,10 @@ function draw() {
     const g = ctx.createRadialGradient(cx, cy, rad * 0.2, cx, cy, rad);
     g.addColorStop(0, "rgba(" + col + ",0.10)"); g.addColorStop(1, "rgba(" + col + ",0.015)");
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, rad, 0, 7); ctx.fill();
-    ctx.strokeStyle = "rgba(" + col + ",0.28)"; ctx.lineWidth = 1 / scale;
+    ctx.strokeStyle = "hsla(" + r.hue + ",60%,60%,0.5)"; ctx.lineWidth = 1.2 / scale;
     ctx.setLineDash([4 / scale, 6 / scale]); ctx.stroke(); ctx.setLineDash([]);
     if (P.realmLabels) {
-      ctx.fillStyle = "rgba(" + col + ",0.85)";
+      ctx.fillStyle = "hsla(" + r.hue + ",70%,70%,0.9)";
       ctx.font = "600 " + (13 / scale) + "px system-ui"; ctx.textAlign = "center";
       ctx.fillText(r.short, cx, cy - rad - 8 / scale);
     }
@@ -224,6 +236,18 @@ function draw() {
   for (const n of N) {                        // nodes
     ctx.fillStyle = n.dead ? ASH : n.gold ? GOLD : (n.work ? "#e08a84" : "#8aa8e0");
     ctx.beginPath(); ctx.arc(n.x, n.y, n.r * P.nodeSize, 0, 7); ctx.fill();
+    if (P.gateRings && n.gates.size) {        // star gates: one ring per destination realm
+      let k = 0;
+      ctx.lineWidth = 1.5 / scale;
+      for (const rn of n.gates) {
+        if (k >= 3) break;
+        ctx.strokeStyle = "hsl(" + realms.get(rn).hue + ",75%,65%)";
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r * P.nodeSize + (2.5 + k * 2.8) / scale, 0, 7);
+        ctx.stroke();
+        k++;
+      }
+    }
   }
   ctx.fillStyle = "rgba(220,220,225,0.75)";   // labels: per the labels switch
   ctx.font = (11 / scale) + "px system-ui"; ctx.textAlign = "center";
@@ -267,7 +291,9 @@ cv.addEventListener("pointermove", ev => {
     tip.style.left = (ev.clientX + 14) + "px"; tip.style.top = (ev.clientY + 14) + "px";
     tip.textContent = hoverNode.stem + "  [" + hoverNode.short + "]  " +
       hoverNode.conn + " links (" + (hoverNode.deg || 0) + " inbound)" +
-      (hoverNode.gold ? " · identity" : "") + (hoverNode.dead ? " · EXPIRED" : "");
+      (hoverNode.gold ? " · identity" : "") + (hoverNode.dead ? " · EXPIRED" : "") +
+      (hoverNode.gates.size ? " · gates → " +
+        [...hoverNode.gates].map(rn => realms.get(rn).short).join(", ") : "");
   } else tip.style.display = "none";
 });
 cv.addEventListener("pointerup", ev => {
@@ -313,6 +339,12 @@ const rlBox = rlLab.querySelector("input");
 rlBox.checked = P.realmLabels;
 rlBox.addEventListener("change", () => { P.realmLabels = rlBox.checked; saveParams(); });
 disp.appendChild(rlLab);
+const grLab = document.createElement("label");
+grLab.innerHTML = "<span>gate rings</span><input type=checkbox>";
+const grBox = grLab.querySelector("input");
+grBox.checked = P.gateRings;
+grBox.addEventListener("change", () => { P.gateRings = grBox.checked; saveParams(); });
+disp.appendChild(grLab);
 const labLab = document.createElement("label");
 labLab.innerHTML = "<span>note labels</span><select>" +
   ["hover", "hubs", "all"].map(m => "<option value=" + m + ">" + m + "</option>").join("") +
@@ -331,6 +363,7 @@ rb.addEventListener("click", () => {
   }
   labSel.value = P.labels;
   rlBox.checked = P.realmLabels;
+  grBox.checked = P.gateRings;
   alpha = Math.max(alpha, 0.5);
 });
 ctrl.appendChild(rb);
