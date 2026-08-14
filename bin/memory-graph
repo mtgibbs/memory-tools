@@ -19,6 +19,7 @@ accordingly — an inferred link is a suggestion, not an assertion.
   graph.py keystones [-n N]              most-linked-to notes
   graph.py orphans                       notes nothing reaches
   graph.py realms                        per-realm connectivity summary
+  graph.py canvas [--out FILE]           realm zones as an Obsidian .canvas file
 
 Add --json to any subcommand for machine-readable output.
 """
@@ -241,6 +242,93 @@ def cmd_brief(g: Graph, a) -> dict:
     return {"query": " ".join(a.terms), "briefs": scored[: a.n]}
 
 
+def cmd_canvas(g: Graph, a) -> dict:
+    """Realm zones as a generated Obsidian Canvas — the layout the force-directed
+    graph view cannot hold: one labeled group box per realm, personal realms on
+    the left, work-- realms on the right, an empty corridor between the sides.
+    Only cross-realm edges are drawn (the zone box already says "these belong
+    together"); edges that cross the personal/work boundary are purple. A canvas
+    is a snapshot, not live physics — regenerate after the vault changes."""
+    NODE_W, NODE_H, PAD, COLS = 260, 50, 20, 3
+    REALM_GAP, SIDE_GAP, COL_GAP = 80, 1800, 60
+
+    def is_work(realm: str) -> bool:
+        return realm.startswith("work--")
+
+    def short(slug: str) -> str:
+        s = slug.removeprefix("work--").removeprefix("-Users-mtgibbs-")
+        return s or slug
+
+    by_realm: dict[str, list[str]] = defaultdict(list)
+    for node, realm in g.realm.items():
+        if node.split("/")[-1] != "MEMORY":
+            by_realm[realm].append(node)
+
+    pairs: dict[frozenset, tuple[str, str, bool]] = {}
+    for src in g.realm:
+        if src.split("/")[-1] == "MEMORY":
+            continue
+        for dst, _ in g.out[src]:
+            if dst not in g.realm or dst.split("/")[-1] == "MEMORY":
+                continue
+            if g.realm[dst] == g.realm[src]:
+                continue
+            pairs.setdefault(frozenset([src, dst]),
+                             (src, dst, is_work(g.realm[src]) != is_work(g.realm[dst])))
+
+    def box(n_notes: int) -> tuple[int, int]:
+        rows = (n_notes + COLS - 1) // COLS
+        return (COLS * NODE_W + (COLS + 1) * PAD,
+                rows * (NODE_H + PAD) + PAD + 40)
+
+    nodes: list[dict] = []
+    placed: set[str] = set()
+    for work in (False, True):
+        realm_list = sorted((r for r in by_realm if is_work(r) == work),
+                            key=lambda r: -len(by_realm[r]))
+        base = 0 if not work else box(1)[0] * 2 + COL_GAP + SIDE_GAP
+        col_x = [base, base + box(1)[0] + COL_GAP]
+        col_y = [0, 0]
+        for realm in realm_list:
+            names = sorted(by_realm[realm])
+            w, h = box(len(names))
+            c = 0 if col_y[0] <= col_y[1] else 1
+            gx, gy = col_x[c], col_y[c]
+            col_y[c] += h + REALM_GAP
+            nodes.append({"id": f"g-{realm}", "type": "group", "x": gx, "y": gy,
+                          "width": w, "height": h, "label": short(realm),
+                          **({"color": "1"} if work else {})})
+            for i, node in enumerate(names):
+                stem = node.split("/")[-1]
+                nodes.append({"id": node, "type": "file",
+                              "x": gx + PAD + (i % COLS) * (NODE_W + PAD),
+                              "y": gy + 40 + PAD + (i // COLS) * (NODE_H + PAD),
+                              "width": NODE_W, "height": NODE_H,
+                              "file": f"{realm}/memory/{stem}.md"})
+                placed.add(node)
+
+    edges: list[dict] = []
+    n_boundary = 0
+    for i, (src, dst, boundary) in enumerate(pairs.values()):
+        if src not in placed or dst not in placed:
+            continue
+        e: dict = {"id": f"e{i}", "fromNode": src, "toNode": dst}
+        if boundary:
+            n_boundary += 1
+            e["color"] = "6"
+            e["fromSide"] = "left" if is_work(g.realm[src]) else "right"
+            e["toSide"] = "left" if is_work(g.realm[dst]) else "right"
+        edges.append(e)
+
+    out = Path(a.out).expanduser() if a.out else g.vault / "atlas.canvas"
+    out.write_text(json.dumps({"nodes": nodes, "edges": edges}))
+    return {"canvas": str(out),
+            "notes": len(placed),
+            "zones": sum(1 for n in nodes if n["type"] == "group"),
+            "cross_realm_edges": len(edges),
+            "boundary_edges": n_boundary}
+
+
 def render(cmd: str, data: dict) -> None:
     if cmd == "neighbors":
         flag = data.get("status")
@@ -287,6 +375,10 @@ def render(cmd: str, data: dict) -> None:
         print(f"{'realm':<46}{'notes':>6}{'intra':>7}{'cross':>7}{'dangl':>7}")
         for r in data["realms"]:
             print(f"{r['realm'][:44]:<46}{r['notes']:>6}{r['intra']:>7}{r['cross']:>7}{r['dangling']:>7}")
+    elif cmd == "canvas":
+        print(f"{data['canvas']}: {data['notes']} notes, {data['zones']} zones, "
+              f"{data['cross_realm_edges']} cross-realm edges "
+              f"({data['boundary_edges']} boundary, purple)")
 
 
 def main() -> int:
@@ -301,11 +393,13 @@ def main() -> int:
     p = sub.add_parser("brief"); p.add_argument("terms", nargs="+"); p.add_argument("-n", type=int, default=5)
     sub.add_parser("orphans")
     sub.add_parser("realms")
+    p = sub.add_parser("canvas"); p.add_argument("--out", default=None)
 
     a = ap.parse_args()
     g = Graph(Path(a.vault).expanduser())
     data = {"neighbors": cmd_neighbors, "path": cmd_path, "keystones": cmd_keystones,
-            "orphans": cmd_orphans, "realms": cmd_realms, "brief": cmd_brief}[a.cmd](g, a)
+            "orphans": cmd_orphans, "realms": cmd_realms, "brief": cmd_brief,
+            "canvas": cmd_canvas}[a.cmd](g, a)
     print(json.dumps(data, indent=2)) if a.json else render(a.cmd, data)
     return 0
 

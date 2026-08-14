@@ -26,7 +26,12 @@ memory-graph path <note-a> <note-b>         # how two topics connect, if at all
 memory-graph keystones                      # the notes everything points at
 memory-graph orphans                        # notes nothing reaches
 memory-graph realms                         # per-folder summary
+memory-graph canvas                         # write <vault>/atlas.canvas — realm zones for Obsidian
 ```
+
+`canvas` draws each realm as a labeled zone box (work-- realms red, on the right),
+with only cross-realm edges shown; personal↔work boundary edges are purple. It is a
+snapshot — regenerate after the vault changes. It writes one file and nothing else.
 
 Add `--json` when you want to process the result.
 
