@@ -8,6 +8,16 @@ html,body{margin:0;height:100%;background:#101014;overflow:hidden;font:12px -app
 #legend{position:fixed;left:12px;bottom:12px;color:#999;background:rgba(16,16,20,.85);
  padding:8px 10px;border-radius:6px;line-height:1.7;z-index:1}
 .sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+#ctrl{position:fixed;right:12px;top:12px;color:#bbb;background:rgba(16,16,20,.9);
+ padding:8px 12px;border-radius:6px;z-index:1;user-select:none}
+#ctrl summary{cursor:pointer;color:#ddd;font-weight:600;margin-bottom:4px}
+#ctrl label{display:flex;align-items:center;gap:8px;margin:5px 0;white-space:nowrap}
+#ctrl label span:first-child{width:88px;color:#999}
+#ctrl input[type=range]{width:140px;accent-color:#8aa8e0}
+#ctrl .val{width:44px;text-align:right;color:#ddd;font-variant-numeric:tabular-nums}
+#ctrl button{margin-top:6px;background:#26262e;color:#ccc;border:1px solid #3a3a44;
+ border-radius:4px;padding:3px 10px;cursor:pointer}
+#ctrl button:hover{background:#32323c}
 </style></head><body>
 <canvas id="c"></canvas><div id="tip"></div>
 <div id="legend">
@@ -18,6 +28,7 @@ html,body{margin:0;height:100%;background:#101014;overflow:hidden;font:12px -app
  <span class="sw" style="background:#7a7a80"></span>expired / superseded<br>
  drag nodes &middot; drag background to pan &middot; scroll to zoom &middot; click opens in Obsidian
 </div>
+<details id="ctrl" open><summary>forces</summary></details>
 <script>
 "use strict";
 const DATA = __DATA__;
@@ -25,6 +36,19 @@ document.title = DATA.vault + " — force map";
 const N = DATA.nodes, E = DATA.edges;
 const GOLD = "#ffd54a", ASH = "#7a7a80", PURPLE = "#b585f0";
 const GA = 2.39996323; // golden angle
+
+// ---- tunable forces -------------------------------------------------------
+const DEFAULTS = { repel: 2200, field: 0.04, linkDist: 220, linkK: 1, corridor: 900, nodeSize: 1 };
+const P = { ...DEFAULTS };
+try { Object.assign(P, JSON.parse(localStorage.getItem("forcemap-params") || "{}")); } catch (e) {}
+const SLIDERS = [
+  ["repel",    "repulsion",     0,   8000, 100,  v => v.toFixed(0)],
+  ["field",    "field pull",    0,   0.15, 0.005, v => v.toFixed(3)],
+  ["linkDist", "link distance", 50,  500,  10,   v => v.toFixed(0)],
+  ["linkK",    "link strength", 0,   3,    0.05, v => v.toFixed(2)],
+  ["corridor", "corridor",      0,   2200, 50,   v => v.toFixed(0)],
+  ["nodeSize", "node size",     0.5, 2.5,  0.05, v => v.toFixed(2)],
+];
 
 // ---- realm anchors: pack each side, keep the corridor empty ---------------
 const realms = new Map();
@@ -55,6 +79,11 @@ for (let it = 0; it < 600; it++) {
   }
   for (const a of R) { a.x += a.fx; a.y += a.fy; }
 }
+// remember each anchor's position relative to its side, so the corridor slider
+// can move the sides without redoing the packing
+for (const r of R) { r.side = r.work ? 1 : -1; r.relx = r.x - r.side * 900; }
+function relayout() { for (const r of R) r.x = r.side * P.corridor + r.relx; }
+relayout();
 R.forEach(r => r.members.forEach((n, j) => {
   const rr = 13 * Math.sqrt(j), th = j * GA;
   n.x = r.x + rr * Math.cos(th); n.y = r.y + rr * Math.sin(th);
@@ -72,21 +101,21 @@ function stepSim() {
     let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
     if (d2 > 90000) continue;                 // 300px cutoff: repulsion stays local
     d2 = Math.max(d2, 25);
-    const d = Math.sqrt(d2), f = 2200 / d2;
+    const d = Math.sqrt(d2), f = P.repel / d2;
     dx /= d; dy /= d;
     a.fx -= dx * f; a.fy -= dy * f; b.fx += dx * f; b.fy += dy * f;
   }
   for (const e of E) {
     const a = N[e.s], b = N[e.t];
     const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
-    const rest = e.i ? 70 : (e.b ? 500 : 220);
-    const k = e.i ? 0.04 : (e.b ? 0.002 : 0.01); // boundary springs stay weak: the gap must hold
+    const rest = e.i ? P.linkDist * 0.32 : (e.b ? P.corridor * 0.55 + 100 : P.linkDist);
+    const k = (e.i ? 0.04 : (e.b ? 0.002 : 0.01)) * P.linkK; // boundary springs stay weak: the gap must hold
     const f = (d - rest) * k;
     a.fx += dx / d * f; a.fy += dy / d * f; b.fx -= dx / d * f; b.fy -= dy / d * f;
   }
   for (const n of N) {
-    n.fx += (n.anchor.x - n.x) * 0.04;        // the forcefield: home pull per realm
-    n.fy += (n.anchor.y - n.y) * 0.04;
+    n.fx += (n.anchor.x - n.x) * P.field;     // the forcefield: home pull per realm
+    n.fy += (n.anchor.y - n.y) * P.field;
     if (n === dragNode) continue;
     n.vx = (n.vx + n.fx * alpha) * 0.8;
     n.vy = (n.vy + n.fy * alpha) * 0.8;
@@ -151,13 +180,13 @@ function draw() {
   ctx.globalAlpha = 1;
   for (const n of N) {                        // nodes
     ctx.fillStyle = n.dead ? ASH : n.gold ? GOLD : (n.work ? "#e08a84" : "#8aa8e0");
-    ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(n.x, n.y, n.r * P.nodeSize, 0, 7); ctx.fill();
   }
   ctx.fillStyle = "rgba(220,220,225,0.75)";   // labels: hubs always, the rest when zoomed
   ctx.font = (11 / scale) + "px system-ui"; ctx.textAlign = "center";
   for (const n of N)
     if (n === hoverNode || n.deg >= 9 || scale > 1.3)
-      ctx.fillText(n.stem, n.x, n.y + n.r + 12 / scale);
+      ctx.fillText(n.stem, n.x, n.y + n.r * P.nodeSize + 12 / scale);
   requestAnimationFrame(draw);
 }
 
@@ -169,7 +198,7 @@ function pick(ev) {
   let best = null, bd = 1e9;
   for (const n of N) {
     const d = Math.hypot(n.x - wx, n.y - wy);
-    if (d < Math.max(n.r + 4 / scale, 9 / scale) && d < bd) { best = n; bd = d; }
+    if (d < Math.max(n.r * P.nodeSize + 4 / scale, 9 / scale) && d < bd) { best = n; bd = d; }
   }
   return best;
 }
@@ -211,6 +240,37 @@ cv.addEventListener("wheel", ev => {
   scale *= f;
   tx = ev.clientX - wx * scale; ty = ev.clientY - wy * scale;
 }, { passive: false });
+
+// ---- slider panel ---------------------------------------------------------
+const ctrl = document.getElementById("ctrl");
+function saveParams() {
+  try { localStorage.setItem("forcemap-params", JSON.stringify(P)); } catch (e) {}
+}
+for (const [key, name, min, max, step, fmt] of SLIDERS) {
+  const lab = document.createElement("label");
+  lab.innerHTML = "<span>" + name + "</span><input type=range min=" + min +
+    " max=" + max + " step=" + step + "><span class=val></span>";
+  const inp = lab.querySelector("input"), val = lab.querySelector(".val");
+  inp.value = P[key]; val.textContent = fmt(P[key]);
+  inp.addEventListener("input", () => {
+    P[key] = +inp.value; val.textContent = fmt(P[key]);
+    if (key === "corridor") relayout();
+    alpha = Math.max(alpha, 0.5); saveParams();
+  });
+  ctrl.appendChild(lab);
+}
+const rb = document.createElement("button");
+rb.textContent = "reset";
+rb.addEventListener("click", () => {
+  Object.assign(P, DEFAULTS); relayout(); saveParams();
+  ctrl.querySelectorAll("label").forEach((lab, i) => {
+    const [key, , , , , fmt] = SLIDERS[i];
+    lab.querySelector("input").value = P[key];
+    lab.querySelector(".val").textContent = fmt(P[key]);
+  });
+  alpha = Math.max(alpha, 0.5);
+});
+ctrl.appendChild(rb);
 
 requestAnimationFrame(draw);
 </script></body></html>
