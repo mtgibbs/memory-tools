@@ -194,14 +194,31 @@ function draw() {
     ctx.lineWidth = (hot ? 1.8 : 1) / scale;
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
   }
+  // boundary links as trade routes: faint dotted lanes, dashes drifting
+  // personal -> work, one small ship per route on its own schedule
+  const now = performance.now() / 1000;
   ctx.strokeStyle = PURPLE;
+  ctx.setLineDash([2.5 / scale, 7 / scale]);
+  ctx.lineDashOffset = -(now * 26) / scale;
   for (const e of E) {
     if (!e.b) continue;
     const a = N[e.s], b = N[e.t];
     const hot = e.s === hi || e.t === hi;
-    ctx.globalAlpha = hot ? 1 : 0.85;
-    ctx.lineWidth = (hot ? 3 : 2) / scale;
+    ctx.globalAlpha = hot ? 0.9 : 0.4;
+    ctx.lineWidth = (hot ? 1.8 : 1) / scale;
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#d9c2ff";
+  let lane = 0;
+  for (const e of E) {
+    if (!e.b) continue;
+    const a = N[e.s], b = N[e.t];
+    const ph = (now * 0.12 + lane * 0.37) % 1; lane++;
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.arc(a.x + (b.x - a.x) * ph, a.y + (b.y - a.y) * ph, 2.2 / scale, 0, 7);
+    ctx.fill();
   }
   ctx.globalAlpha = 1;
   for (const n of N) {                        // nodes
