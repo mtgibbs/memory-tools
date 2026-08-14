@@ -8,17 +8,19 @@ html,body{margin:0;height:100%;background:#101014;overflow:hidden;font:12px -app
 #legend{position:fixed;left:12px;bottom:12px;color:#999;background:rgba(16,16,20,.85);
  padding:8px 10px;border-radius:6px;line-height:1.7;z-index:1}
 .sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
-#ctrl{position:fixed;right:12px;top:12px;color:#bbb;background:rgba(16,16,20,.9);
- padding:8px 12px;border-radius:6px;z-index:1;user-select:none}
-#ctrl summary{cursor:pointer;color:#ddd;font-weight:600;margin-bottom:4px}
-#ctrl label{display:flex;align-items:center;gap:8px;margin:5px 0;white-space:nowrap}
-#ctrl label span:first-child{width:88px;color:#999}
-#ctrl input[type=range]{width:140px;accent-color:#8aa8e0}
-#ctrl .val{width:44px;text-align:right;color:#ddd;font-variant-numeric:tabular-nums}
-#ctrl button{margin-top:6px;background:#26262e;color:#ccc;border:1px solid #3a3a44;
+#panels{position:fixed;right:12px;top:12px;z-index:1;display:flex;flex-direction:column;
+ gap:8px;align-items:flex-end}
+#panels details{color:#bbb;background:rgba(16,16,20,.9);padding:8px 12px;border-radius:6px;user-select:none}
+#panels summary{cursor:pointer;color:#ddd;font-weight:600;margin-bottom:4px}
+#panels label{display:flex;align-items:center;gap:8px;margin:5px 0;white-space:nowrap}
+#panels label span:first-child{width:88px;color:#999}
+#panels input[type=range]{width:140px;accent-color:#8aa8e0}
+#panels input[type=checkbox]{accent-color:#8aa8e0}
+#panels .val{width:44px;text-align:right;color:#ddd;font-variant-numeric:tabular-nums}
+#panels button{margin-top:6px;background:#26262e;color:#ccc;border:1px solid #3a3a44;
  border-radius:4px;padding:3px 10px;cursor:pointer}
-#ctrl button:hover{background:#32323c}
-#ctrl select{background:#26262e;color:#ccc;border:1px solid #3a3a44;border-radius:4px;padding:2px 6px}
+#panels button:hover{background:#32323c}
+#panels select{background:#26262e;color:#ccc;border:1px solid #3a3a44;border-radius:4px;padding:2px 6px}
 </style></head><body>
 <canvas id="c"></canvas><div id="tip"></div>
 <div id="legend">
@@ -29,7 +31,10 @@ html,body{margin:0;height:100%;background:#101014;overflow:hidden;font:12px -app
  <span class="sw" style="background:#7a7a80"></span>expired / superseded<br>
  drag nodes &middot; drag background to pan &middot; scroll to zoom &middot; click opens in Obsidian
 </div>
+<div id="panels">
 <details id="ctrl" open><summary>forces</summary></details>
+<details id="disp" open><summary>display</summary></details>
+</div>
 <script>
 "use strict";
 const DATA = __DATA__;
@@ -40,7 +45,7 @@ const GA = 2.39996323; // golden angle
 
 // ---- tunable forces -------------------------------------------------------
 const DEFAULTS = { repel: 2200, field: 0.04, linkDist: 220, linkK: 1, corridor: 900,
-                   nodeSize: 1, weight: 1, labels: "hover" };
+                   nodeSize: 1, weight: 1, labels: "hover", realmLabels: true };
 const P = { ...DEFAULTS };
 try { Object.assign(P, JSON.parse(localStorage.getItem("forcemap-params") || "{}")); } catch (e) {}
 const SLIDERS = [
@@ -172,9 +177,11 @@ function draw() {
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, rad, 0, 7); ctx.fill();
     ctx.strokeStyle = "rgba(" + col + ",0.28)"; ctx.lineWidth = 1 / scale;
     ctx.setLineDash([4 / scale, 6 / scale]); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = "rgba(" + col + ",0.85)";
-    ctx.font = "600 " + (13 / scale) + "px system-ui"; ctx.textAlign = "center";
-    ctx.fillText(r.short, cx, cy - rad - 8 / scale);
+    if (P.realmLabels) {
+      ctx.fillStyle = "rgba(" + col + ",0.85)";
+      ctx.font = "600 " + (13 / scale) + "px system-ui"; ctx.textAlign = "center";
+      ctx.fillText(r.short, cx, cy - rad - 8 / scale);
+    }
     r.cx = cx; r.cy = cy;
   }
   const hi = hoverNode ? hoverNode.i : -1;    // ordinary edges under, boundary on top
@@ -282,14 +289,21 @@ for (const [key, name, min, max, step, fmt] of SLIDERS) {
   });
   ctrl.appendChild(lab);
 }
+const disp = document.getElementById("disp");
+const rlLab = document.createElement("label");
+rlLab.innerHTML = "<span>realm labels</span><input type=checkbox>";
+const rlBox = rlLab.querySelector("input");
+rlBox.checked = P.realmLabels;
+rlBox.addEventListener("change", () => { P.realmLabels = rlBox.checked; saveParams(); });
+disp.appendChild(rlLab);
 const labLab = document.createElement("label");
-labLab.innerHTML = "<span>labels</span><select>" +
+labLab.innerHTML = "<span>note labels</span><select>" +
   ["hover", "hubs", "all"].map(m => "<option value=" + m + ">" + m + "</option>").join("") +
   "</select>";
 const labSel = labLab.querySelector("select");
 labSel.value = P.labels;
 labSel.addEventListener("change", () => { P.labels = labSel.value; saveParams(); });
-ctrl.appendChild(labLab);
+disp.appendChild(labLab);
 const rb = document.createElement("button");
 rb.textContent = "reset";
 rb.addEventListener("click", () => {
@@ -299,6 +313,7 @@ rb.addEventListener("click", () => {
     refs[key].val.textContent = refs[key].fmt(P[key]);
   }
   labSel.value = P.labels;
+  rlBox.checked = P.realmLabels;
   alpha = Math.max(alpha, 0.5);
 });
 ctrl.appendChild(rb);
