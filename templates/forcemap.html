@@ -21,6 +21,8 @@ html,body{margin:0;height:100%;background:#101014;overflow:hidden;font:12px -app
  border-radius:4px;padding:3px 10px;cursor:pointer}
 #panels button:hover{background:#32323c}
 #panels select{background:#26262e;color:#ccc;border:1px solid #3a3a44;border-radius:4px;padding:2px 6px}
+.ambient #panels,.ambient #legend{display:none}
+.ambient #c{cursor:none}
 </style></head><body>
 <canvas id="c"></canvas><div id="tip"></div>
 <div id="legend">
@@ -40,6 +42,13 @@ html,body{margin:0;height:100%;background:#101014;overflow:hidden;font:12px -app
 "use strict";
 const DATA = __DATA__;
 document.title = DATA.vault + " — force map";
+// ?ambient — gallery mode for a wall screen: no chrome, attract loop, and a
+// periodic reload so a long-lived kiosk picks up freshly generated data.
+const AMBIENT = new URLSearchParams(location.search).has("ambient");
+if (AMBIENT) {
+  document.body.classList.add("ambient");
+  setTimeout(() => location.reload(), 15 * 60 * 1000);
+}
 const N = DATA.nodes, E = DATA.edges;
 const GOLD = "#ffd54a", ASH = "#7a7a80", PURPLE = "#b585f0";
 const GA = 2.39996323; // golden angle
@@ -158,6 +167,8 @@ function stepSim() {
 const cv = document.getElementById("c"), ctx = cv.getContext("2d");
 const tip = document.getElementById("tip");
 let scale = 1, tx = 0, ty = 0, dpr = 1;
+let baseS = 1, baseX = 0, baseY = 0;          // the fitted whole-map view
+let tgtS = null, tgtX = 0, tgtY = 0;          // ambient camera target
 function fit() {
   dpr = window.devicePixelRatio || 1;
   cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
@@ -169,11 +180,17 @@ function fit() {
   scale = Math.min(innerWidth / (x1 - x0 + 200), innerHeight / (y1 - y0 + 200));
   tx = innerWidth / 2 - (x0 + x1) / 2 * scale;
   ty = innerHeight / 2 - (y0 + y1) / 2 * scale;
+  baseS = scale; baseX = tx; baseY = ty;
 }
 fit(); addEventListener("resize", () => { fit(); });
 
 function draw() {
   if (alpha > 0.003) stepSim();
+  if (AMBIENT && tgtS !== null) {             // gentle camera drift toward the target
+    scale += (tgtS - scale) * 0.015;
+    tx += (tgtX - tx) * 0.015;
+    ty += (tgtY - ty) * 0.015;
+  }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, innerWidth, innerHeight);
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
@@ -368,6 +385,29 @@ rb.addEventListener("click", () => {
   alpha = Math.max(alpha, 0.5);
 });
 ctrl.appendChild(rb);
+
+// ---- ambient attract loop -------------------------------------------------
+if (AMBIENT) {
+  const interesting = N.filter(n => n.conn >= 3);
+  const aim = node => {
+    if (node) {
+      tgtS = Math.min(baseS * 3, 1.6);
+      tgtX = innerWidth / 2 - node.x * tgtS;
+      tgtY = innerHeight / 2 - node.y * tgtS;
+    } else { tgtS = baseS; tgtX = baseX; tgtY = baseY; }
+  };
+  let beat = 0;
+  setInterval(() => {
+    beat++;
+    if (beat % 4 === 0) { hoverNode = null; aim(null); }   // step back for the wide shot
+    else {
+      hoverNode = interesting[Math.floor(Math.random() * interesting.length)] || N[0];
+      aim(hoverNode);
+    }
+    alpha = Math.max(alpha, 0.08);            // keep a little motion in the fields
+  }, 18000);
+  aim(null);
+}
 
 requestAnimationFrame(draw);
 </script></body></html>
