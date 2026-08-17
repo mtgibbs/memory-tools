@@ -317,8 +317,10 @@ cv.addEventListener("pointermove", ev => {
 cv.addEventListener("pointerup", ev => {
   if (moved < 5) {
     const n = pick(ev);
-    if (n) location.href = "obsidian://open?vault=" + encodeURIComponent(DATA.vault) +
-      "&file=" + encodeURIComponent(n.realm + "/memory/" + n.stem);
+    // absolute path, not vault+file: an unresolvable file= makes Obsidian create
+    // an empty note at the vault root instead of opening anything
+    if (n) location.href = "obsidian://open?path=" +
+      encodeURIComponent(DATA.root + "/" + n.realm + "/memory/" + n.stem + ".md");
   }
   dragNode = null; panning = false;
 });

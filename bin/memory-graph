@@ -374,8 +374,8 @@ def cmd_forcemap(g: Graph, a) -> dict:
                               "i": int(same), "b": int(boundary)})
     edges = list(pairs.values())
 
-    data = json.dumps({"vault": g.vault.name, "nodes": nodes, "edges": edges}
-                      ).replace("</", "<\\/")
+    data = json.dumps({"vault": g.vault.name, "root": str(g.vault),
+                       "nodes": nodes, "edges": edges}).replace("</", "<\\/")
     tpl_path = Path(__file__).resolve().parent.parent / "templates" / "forcemap.html"
     tpl = tpl_path.read_text(encoding="utf-8")
     assert tpl.count("__DATA__") == 1, f"placeholder missing in {tpl_path}"
