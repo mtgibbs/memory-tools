@@ -196,6 +196,24 @@ def cmd_keystones(g: Graph, a) -> dict:
     return {"keystones": rows[: a.n], "ranked_by": "inbound" if a.include_inferred else "authored"}
 
 
+def cmd_stale_refs(g: Graph, a) -> dict:
+    """Live notes still pointing at invalidated ones — where a correction has not
+    yet travelled. `brief` refuses to quote these at read time, but the link is
+    still sitting in the file; an authored one needs a human, an inferred one is
+    cleared by re-running memory-infer --write."""
+    rows = []
+    for src in sorted(g.realm):
+        if src in g.status:
+            continue                       # history citing history is fine
+        for dst, prov in g.out[src]:
+            if dst in g.realm and dst in g.status:
+                rows.append({"note": src.split("/")[-1], "realm": g.realm[src],
+                             "points_at": dst.split("/")[-1], "state": g.status[dst],
+                             "provenance": prov})
+    return {"stale_refs": rows, "count": len(rows),
+            "authored": sum(1 for r in rows if r["provenance"] == "authored")}
+
+
 def cmd_orphans(g: Graph, a) -> dict:
     o = [{"note": n.split("/")[-1], "realm": g.realm[n]} for n in sorted(g.realm)
          if not g.out[n] and not g.inn[n]]
@@ -471,6 +489,15 @@ def render(cmd: str, data: dict) -> None:
         print(f"{'auth':>5} {'infer':>6} {'total':>6}  note")
         for r in data["keystones"]:
             print(f"{r['authored']:>5} {r['inferred']:>6} {r['inbound']:>6}  {r['note']}")
+    elif cmd == "stale_refs":
+        if not data["count"]:
+            print("no live note points at an invalidated one — corrections have travelled")
+        else:
+            print(f"{data['count']} link(s) into invalidated notes "
+                  f"({data['authored']} authored — those need a human; the rest clear on "
+                  f"`memory-infer --write`)")
+            for r in data["stale_refs"]:
+                print(f"  {r['provenance']:<9} {r['note'][:38]:<38} -> {r['points_at']} ({r['state']})")
     elif cmd == "orphans":
         print(f"{data['count']} of {data['total']} notes have no links in or out")
         for o in data["orphans"]:
@@ -502,15 +529,18 @@ def main() -> int:
                    help="rank by total inbound instead of authored-only (lets machine echo count)")
     p = sub.add_parser("brief"); p.add_argument("terms", nargs="+"); p.add_argument("-n", type=int, default=5)
     sub.add_parser("orphans")
+    sub.add_parser("stale-refs")
     sub.add_parser("realms")
     p = sub.add_parser("canvas"); p.add_argument("--out", default=None)
     p = sub.add_parser("forcemap"); p.add_argument("--out", default=None)
 
     a = ap.parse_args()
+    a.cmd = a.cmd.replace("-", "_")
     g = Graph(Path(a.vault).expanduser())
     data = {"neighbors": cmd_neighbors, "path": cmd_path, "keystones": cmd_keystones,
             "orphans": cmd_orphans, "realms": cmd_realms, "brief": cmd_brief,
-            "canvas": cmd_canvas, "forcemap": cmd_forcemap}[a.cmd](g, a)
+            "canvas": cmd_canvas, "forcemap": cmd_forcemap,
+            "stale_refs": cmd_stale_refs}[a.cmd](g, a)
     print(json.dumps(data, indent=2)) if a.json else render(a.cmd, data)
     return 0
 

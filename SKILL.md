@@ -25,6 +25,7 @@ memory-graph neighbors <note-name> --hops 2 # widen
 memory-graph path <note-a> <note-b>         # how two topics connect, if at all
 memory-graph keystones                      # the notes everything points at (authored links only)
 memory-graph orphans                        # notes nothing reaches
+memory-graph stale-refs                     # live notes still pointing at invalidated ones
 memory-graph realms                         # per-folder summary
 memory-graph canvas                         # write <vault>/atlas.canvas — realm zones for Obsidian
 memory-graph forcemap                       # write <vault>/atlas.html — force graph with realm forcefields
@@ -45,6 +46,11 @@ Add `--json` when you want to process the result.
 link is shared vocabulary, not a human saying "this matters" — counting it lets
 repetition masquerade as corroboration, and it did: one note ranked #2 on 22 inbound
 of which 15 were machine echo. `--include-inferred` restores the old ranking.
+
+`stale-refs` is the audit for that principle: it lists every live note still linking to
+an invalidated one. **Inferred** ones clear by re-running `memory-infer --write`
+(the tool owns those blocks). **Authored** ones need a human — most often a `MEMORY.md`
+index line still advertising a retracted note as current.
 
 **Corrections travel downstream.** `brief` already skips invalidated notes; it also
 refuses to quote a line that *cites* one, and drops invalidated notes from the links
