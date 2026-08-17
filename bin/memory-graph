@@ -173,6 +173,14 @@ def cmd_path(g: Graph, a) -> dict:
 
 
 def cmd_keystones(g: Graph, a) -> dict:
+    """Ranked by AUTHORED inbound links only.
+
+    An inferred link is vocabulary overlap, not a human saying "this matters" —
+    counting it toward centrality lets repetition masquerade as corroboration
+    (the failure the Jim Carrey knowledge-panel essay names). Ranking by the sum
+    put level5-north-star-plan at #2 on 22 inbound of which 15 were machine echo.
+    Inferred counts still print, as a separate, clearly-labelled column;
+    --include-inferred restores the old ranking for anyone who wants it."""
     rows = []
     for n in g.realm:
         auth = sum(1 for _, p in g.inn[n] if p == "authored")
@@ -180,8 +188,12 @@ def cmd_keystones(g: Graph, a) -> dict:
         if auth + infr:
             rows.append({"note": n.split("/")[-1], "realm": g.realm[n], "inbound": auth + infr,
                          "authored": auth, "inferred": infr})
-    rows.sort(key=lambda r: (-r["inbound"], -r["authored"], r["note"]))
-    return {"keystones": rows[: a.n]}
+    key = (lambda r: (-r["inbound"], -r["authored"], r["note"])) if a.include_inferred \
+        else (lambda r: (-r["authored"], -r["inferred"], r["note"]))
+    rows.sort(key=key)
+    if not a.include_inferred:
+        rows = [r for r in rows if r["authored"]]
+    return {"keystones": rows[: a.n], "ranked_by": "inbound" if a.include_inferred else "authored"}
 
 
 def cmd_orphans(g: Graph, a) -> dict:
@@ -208,7 +220,13 @@ def cmd_brief(g: Graph, a) -> dict:
     """A §6-ready block: the map's most relevant notes for a spec being written.
     This is how loops read the map — at authoring time, pushed into the spec,
     never pulled at run time. Invalidated notes are excluded: history must not
-    brief new work."""
+    brief new work.
+
+    Exclusion travels downstream too: a quoted line that points at an invalidated
+    note is not quoted, and invalidated neighbours are dropped from the links
+    list. A correction has to reach everything that repeats the claim, not just
+    the note that carried it — otherwise a retracted fact keeps briefing new work
+    through its citations. Anything dropped is reported, never silently removed."""
     terms = [t.lower() for t in a.terms]
     scored = []
     for node, realm in g.realm.items():
@@ -227,18 +245,39 @@ def cmd_brief(g: Graph, a) -> dict:
         score = sum(3 * desc.lower().count(t) + low.count(t) for t in terms)
         if score == 0:
             continue
-        best = ""
+        def stale_refs(text: str) -> list[str]:
+            """Invalidated notes this text cites — a retracted claim must not ride
+            back in as a quotation."""
+            out = []
+            for raw_link in WIKI.findall(text):
+                tgt = g._target(node, raw_link.strip())
+                if tgt and tgt in g.status:
+                    out.append(f"{tgt.split('/')[-1]} ({g.status[tgt]})")
+            return out
+
+        best, suppressed = "", []
         for line in raw.splitlines():
             ll = line.lower()
             n = sum(ll.count(t) for t in terms)
             skip = line.startswith(("---", "description:")) or line.strip().startswith("[[")
             if n > 0 and len(line.strip()) > 20 and not skip:
+                bad = stale_refs(line)
+                if bad:
+                    suppressed.extend(bad)
+                    continue
                 if not best or n > sum(best.lower().count(t) for t in terms):
                     best = line.strip().lstrip("-*# ").strip()
-        neighbors = [d.split("/")[-1] for d, prov in g.out[node]
-                     if prov == "authored" and d in g.realm][:3]
+        neighbors, dropped = [], []
+        for d, prov in g.out[node]:
+            if prov != "authored" or d not in g.realm:
+                continue
+            if d in g.status:
+                dropped.append(f"{d.split('/')[-1]} ({g.status[d]})")
+            elif len(neighbors) < 3:
+                neighbors.append(d.split("/")[-1])
         scored.append({"note": node.split("/")[-1], "realm": realm, "score": score,
-                       "description": desc, "line": best[:160], "authored_links": neighbors})
+                       "description": desc, "line": best[:160], "authored_links": neighbors,
+                       "excluded_stale": sorted(set(suppressed + dropped))})
     scored.sort(key=lambda r: -r["score"])
     return {"query": " ".join(a.terms), "briefs": scored[: a.n]}
 
@@ -411,6 +450,8 @@ def render(cmd: str, data: dict) -> None:
             print(f"- **{b['note']}**{links}\n  {b['description']}")
             if b["line"] and b["line"].lower() != b["description"].lower():
                 print(f"  > {b['line']}")
+            if b["excluded_stale"]:
+                print(f"  ⊘ withheld — cites invalidated: {', '.join(b['excluded_stale'])}")
         if not data["briefs"]:
             print("- (no matching notes — the map has nothing on this yet)")
     elif cmd == "path":
@@ -421,9 +462,15 @@ def render(cmd: str, data: dict) -> None:
             for i, n in enumerate(data["path"]):
                 print(f"  {'└─ ' if i else ''}{n}")
     elif cmd == "keystones":
-        print(f"{'inbound':>8} {'auth':>5} {'infer':>6}  note")
+        if data["ranked_by"] == "authored":
+            print("ranked by AUTHORED links — inferred shown but not counted "
+                  "(vocabulary overlap is not endorsement)")
+        else:
+            print("ranked by TOTAL inbound — inferred links included; "
+                  "machine echo can inflate this")
+        print(f"{'auth':>5} {'infer':>6} {'total':>6}  note")
         for r in data["keystones"]:
-            print(f"{r['inbound']:>8} {r['authored']:>5} {r['inferred']:>6}  {r['note']}")
+            print(f"{r['authored']:>5} {r['inferred']:>6} {r['inbound']:>6}  {r['note']}")
     elif cmd == "orphans":
         print(f"{data['count']} of {data['total']} notes have no links in or out")
         for o in data["orphans"]:
@@ -451,6 +498,8 @@ def main() -> int:
     p = sub.add_parser("neighbors"); p.add_argument("note"); p.add_argument("--hops", type=int, default=1)
     p = sub.add_parser("path"); p.add_argument("frm", metavar="from"); p.add_argument("to")
     p = sub.add_parser("keystones"); p.add_argument("-n", type=int, default=12)
+    p.add_argument("--include-inferred", action="store_true",
+                   help="rank by total inbound instead of authored-only (lets machine echo count)")
     p = sub.add_parser("brief"); p.add_argument("terms", nargs="+"); p.add_argument("-n", type=int, default=5)
     sub.add_parser("orphans")
     sub.add_parser("realms")

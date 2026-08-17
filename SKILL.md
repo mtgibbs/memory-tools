@@ -23,7 +23,7 @@ When that is not enough:
 memory-graph neighbors <note-name>          # what links to and from it
 memory-graph neighbors <note-name> --hops 2 # widen
 memory-graph path <note-a> <note-b>         # how two topics connect, if at all
-memory-graph keystones                      # the notes everything points at
+memory-graph keystones                      # the notes everything points at (authored links only)
 memory-graph orphans                        # notes nothing reaches
 memory-graph realms                         # per-folder summary
 memory-graph canvas                         # write <vault>/atlas.canvas — realm zones for Obsidian
@@ -39,6 +39,18 @@ labeled boxes. Caution: a generated `.canvas` embeds every note, so Obsidian's g
 view shows it as a fake hub — filter it out with `-path:"atlas.canvas"`.
 
 Add `--json` when you want to process the result.
+
+**Inferred links do not count as endorsement.** `keystones` ranks by *authored*
+(hand-written) inbound links; the inferred column still prints beside it. An inferred
+link is shared vocabulary, not a human saying "this matters" — counting it lets
+repetition masquerade as corroboration, and it did: one note ranked #2 on 22 inbound
+of which 15 were machine echo. `--include-inferred` restores the old ranking.
+
+**Corrections travel downstream.** `brief` already skips invalidated notes; it also
+refuses to quote a line that *cites* one, and drops invalidated notes from the links
+list — printing `⊘ withheld — cites invalidated: <note> (expired)` so the omission is
+visible rather than silent. A retracted fact must not ride back into a new spec as
+somebody else's quotation.
 
 `memory-graph neighbors` is the one to reach for most. Reading a note file shows what it
 points at; it cannot show what points at it. Backlinks only come from this.
