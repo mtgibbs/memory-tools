@@ -34,6 +34,7 @@ memory-graph neighbors project_local_coding_agent   # in and out, one call
 memory-graph path note-a note-b                     # how two notes connect, if at all
 memory-graph keystones                              # most linked-to notes
 memory-graph orphans                                # notes nothing reaches
+memory-graph challenged                             # claims marked doubted, not yet resolved
 memory-graph realms                                 # per-folder summary
 ```
 

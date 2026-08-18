@@ -26,6 +26,7 @@ memory-graph path <note-a> <note-b>         # how two topics connect, if at all
 memory-graph keystones                      # the notes everything points at (authored links only)
 memory-graph orphans                        # notes nothing reaches
 memory-graph stale-refs                     # live notes still pointing at invalidated ones
+memory-graph challenged                     # claims marked doubted, not yet resolved
 memory-graph realms                         # per-folder summary
 memory-graph canvas                         # write <vault>/atlas.canvas — realm zones for Obsidian
 memory-graph forcemap                       # write <vault>/atlas.html — force graph with realm forcefields
@@ -163,6 +164,47 @@ memory-amend status --constitution ...                             # read-only v
 ```
 
 Never accept or decline on the user's behalf. Declines are remembered forever.
+
+## Doubt: challenge the claim, not the note
+
+`status:` in frontmatter is per NOTE. Doubt arrives per CLAIM. A long note with one wrong
+sentence has no way to say so — which is why notes across the corpus already carry
+hand-improvised `(SUPERSEDED)` and `CLOSED <date>:` markers mid-prose. This is that habit,
+standardised so the tools can read it.
+
+Append the marker **below** the claim. Never rewrite the claim: an unresolved doubt must
+not erase the thing being doubted.
+
+```markdown
+Widget pages sit behind a strict CDN. WebFetch and curl both return 403, so use
+Playwright with a real user agent to read one.
+
+**CHALLENGED 2026-08-18:** WebFetch reached the page first try today, no 403. The
+block may have been temporary or region-specific.
+```
+
+- It scopes to the **paragraph directly above it**. Put it at the top of the body instead
+  and it doubts the **whole note**.
+- **Deleting the marker is how a challenge resolves in the claim's favour.** If the claim
+  turned out wrong, the marker stays — it is the correction now. `git log` keeps both stories.
+- A challenged claim keeps its `[[links]]`. The connection is still real; the fact is what
+  is in doubt.
+
+What changes downstream — the claim stays readable, it just loses the right to be quoted:
+
+| | reads it | quotes it as fact |
+|---|---|---|
+| a human opening the note | yes | their call |
+| `memory-graph brief` | no | **no** — prints `⚠ challenged <date> — <why>` in its place |
+| `memory-amend` | no | **no** — a doubted paragraph never reaches the law queue |
+
+```bash
+memory-graph challenged        # every open challenge, oldest first
+```
+
+**Challenged is not expired.** Expired is a verdict; challenged is an open question.
+Collapsing the two in either direction loses the thing worth keeping — either a probably-good
+claim gets buried, or a doubted one keeps briefing new work.
 
 ## Time: invalidate, never delete
 

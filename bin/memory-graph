@@ -18,6 +18,7 @@ accordingly — an inferred link is a suggestion, not an assertion.
   graph.py path <from> <to>              how two notes are related, if at all
   graph.py keystones [-n N]              most-linked-to notes
   graph.py orphans                       notes nothing reaches
+  graph.py challenged                    claims marked doubted but not yet resolved
   graph.py realms                        per-realm connectivity summary
   graph.py canvas [--out FILE]           realm zones as an Obsidian .canvas file
   graph.py forcemap [--out FILE]         force-directed map with realm forcefields (HTML)
@@ -36,6 +37,57 @@ INVALID = re.compile(r"^\s*status:\s*(superseded|expired)\b", re.M | re.I)
 WIKI = re.compile(r"\[\[([^\]|#]+)")
 SCORED = re.compile(r"\[\[([^\]|#]+)\]\][^\n]*?—\s*(0\.\d+)")
 MD = re.compile(r"\[[^\]]*\]\(([^)\s]+\.md)\)")
+CHALLENGE = re.compile(r"^\*\*CHALLENGED\s+(\d{4}-\d{2}-\d{2})\s*:?\s*\*\*:?\s*(.*)$", re.I)
+
+
+def body_of(text: str) -> str:
+    """Everything after the YAML frontmatter."""
+    lines = text.splitlines(keepends=True)
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                return "".join(lines[i + 1:])
+    return text
+
+
+def parse_challenges(body: str) -> list[dict]:
+    """Find every `**CHALLENGED <date>:** why` marker and the claim it challenges.
+
+    Status in frontmatter is per NOTE; doubt arrives per CLAIM. A 240-line note
+    with one wrong sentence cannot say so — which is why several notes already
+    carry hand-improvised `(SUPERSEDED)` and `CLOSED <date>:` markers in prose.
+    This is that habit, standardised so the tools can read it.
+
+    The marker is APPENDED below the claim, never written over it: an unresolved
+    doubt must not erase the thing being doubted. It scopes to the paragraph
+    directly above; placed at the top of the body, it scopes to the whole note.
+    Deleting the marker is how a challenge resolves in the claim's favour — git
+    log keeps the record either way."""
+    lines = body.splitlines()
+    out, i = [], 0
+    while i < len(lines):
+        m = CHALLENGE.match(lines[i].strip())
+        if not m:
+            i += 1
+            continue
+        why, j = [m.group(2).strip()], i + 1
+        while j < len(lines) and lines[j].strip() and not CHALLENGE.match(lines[j].strip()):
+            why.append(lines[j].strip())
+            j += 1
+        end = i - 1
+        while end >= 0 and not lines[end].strip():
+            end -= 1
+        start = end
+        while start >= 0 and lines[start].strip() \
+                and not lines[start].lstrip().startswith("#") \
+                and not CHALLENGE.match(lines[start].strip()):
+            start -= 1
+        claim = [l.strip() for l in lines[start + 1:end + 1] if l.strip()]
+        out.append({"date": m.group(1), "why": " ".join(w for w in why if w),
+                    "claim": " ".join(claim), "lines": claim,
+                    "marker": [l.strip() for l in lines[i:j] if l.strip()]})
+        i = j
+    return out
 
 
 class Graph:
@@ -59,12 +111,16 @@ class Graph:
             self.realm[node] = p.parts[-3]
             self.by_stem[p.stem].append(node)
         self.status: dict[str, str] = {}
+        self.challenged: dict[str, list[dict]] = {}
         for p in paths:
             src = f"{p.parts[-3]}/{p.stem}"
             text = p.read_text(encoding="utf-8", errors="replace")
             sm = INVALID.search(text[:600])
             if sm:
                 self.status[src] = sm.group(1).lower()
+            ch = parse_challenges(body_of(text))
+            if ch:
+                self.challenged[src] = ch
             authored, inferred = text, ""
             if BEGIN in text:
                 authored, _, rest = text.partition(BEGIN)
@@ -214,6 +270,24 @@ def cmd_stale_refs(g: Graph, a) -> dict:
             "authored": sum(1 for r in rows if r["provenance"] == "authored")}
 
 
+def cmd_challenged(g: Graph, a) -> dict:
+    """Claims currently marked doubted — the state between live and invalidated.
+
+    `expired`/`superseded` is a verdict; a challenge is an open question, and
+    collapsing the two in either direction loses the thing worth keeping. These
+    stay in their files and stay readable; what they lose is the right to be
+    quoted as fact by `brief`."""
+    rows = []
+    for node in sorted(g.challenged):
+        for c in g.challenged[node]:
+            rows.append({"note": node.split("/")[-1], "realm": g.realm[node],
+                         "date": c["date"], "why": c["why"], "claim": c["claim"],
+                         "scope": "note" if not c["lines"] else "claim",
+                         "note_status": g.status.get(node)})
+    rows.sort(key=lambda r: (r["date"], r["realm"], r["note"]))
+    return {"challenged": rows, "count": len(rows), "notes": len({r["note"] for r in rows})}
+
+
 def cmd_orphans(g: Graph, a) -> dict:
     o = [{"note": n.split("/")[-1], "realm": g.realm[n]} for n in sorted(g.realm)
          if not g.out[n] and not g.inn[n]]
@@ -273,12 +347,18 @@ def cmd_brief(g: Graph, a) -> dict:
                     out.append(f"{tgt.split('/')[-1]} ({g.status[tgt]})")
             return out
 
+        body = body_of(raw)
+        chal = parse_challenges(body)
+        withheld = {l for c in chal for l in c["lines"] + c["marker"]}
+        note_wide = any(not c["lines"] for c in chal)
         best, suppressed = "", []
-        for line in raw.splitlines():
+        for line in body.splitlines():     # body only: frontmatter is not a fact line
             ll = line.lower()
             n = sum(ll.count(t) for t in terms)
             skip = line.startswith(("---", "description:")) or line.strip().startswith("[[")
             if n > 0 and len(line.strip()) > 20 and not skip:
+                if note_wide or line.strip() in withheld:
+                    continue                   # doubted — reported below, not quoted
                 bad = stale_refs(line)
                 if bad:
                     suppressed.extend(bad)
@@ -295,7 +375,10 @@ def cmd_brief(g: Graph, a) -> dict:
                 neighbors.append(d.split("/")[-1])
         scored.append({"note": node.split("/")[-1], "realm": realm, "score": score,
                        "description": desc, "line": best[:160], "authored_links": neighbors,
-                       "excluded_stale": sorted(set(suppressed + dropped))})
+                       "excluded_stale": sorted(set(suppressed + dropped)),
+                       "challenged": [{"date": c["date"], "why": c["why"],
+                                       "scope": "note" if not c["lines"] else "claim"}
+                                      for c in chal]})
     scored.sort(key=lambda r: -r["score"])
     return {"query": " ".join(a.terms), "briefs": scored[: a.n]}
 
@@ -470,6 +553,8 @@ def render(cmd: str, data: dict) -> None:
                 print(f"  > {b['line']}")
             if b["excluded_stale"]:
                 print(f"  ⊘ withheld — cites invalidated: {', '.join(b['excluded_stale'])}")
+            for c in b.get("challenged", []):
+                print(f"  ⚠ challenged {c['date']} ({c['scope']}) — {c['why'][:150]}")
         if not data["briefs"]:
             print("- (no matching notes — the map has nothing on this yet)")
     elif cmd == "path":
@@ -498,6 +583,17 @@ def render(cmd: str, data: dict) -> None:
                   f"`memory-infer --write`)")
             for r in data["stale_refs"]:
                 print(f"  {r['provenance']:<9} {r['note'][:38]:<38} -> {r['points_at']} ({r['state']})")
+    elif cmd == "challenged":
+        if not data["count"]:
+            print("no open challenges — nothing in the map is marked doubted")
+        else:
+            print(f"{data['count']} open challenge(s) in {data['notes']} note(s) — the claim stays "
+                  "in the file and stays readable; brief will not quote it as fact")
+            for r in data["challenged"]:
+                dead = f" [note {r['note_status']}]" if r["note_status"] else ""
+                print(f"  {r['date']}  {r['note'][:36]:<36} [{r['scope']}]{dead} {r['why'][:88]}")
+                if r["claim"]:
+                    print(f"{'':>14}↳ {r['claim'][:96]}")
     elif cmd == "orphans":
         print(f"{data['count']} of {data['total']} notes have no links in or out")
         for o in data["orphans"]:
@@ -530,6 +626,7 @@ def main() -> int:
     p = sub.add_parser("brief"); p.add_argument("terms", nargs="+"); p.add_argument("-n", type=int, default=5)
     sub.add_parser("orphans")
     sub.add_parser("stale-refs")
+    sub.add_parser("challenged")
     sub.add_parser("realms")
     p = sub.add_parser("canvas"); p.add_argument("--out", default=None)
     p = sub.add_parser("forcemap"); p.add_argument("--out", default=None)
@@ -540,7 +637,7 @@ def main() -> int:
     data = {"neighbors": cmd_neighbors, "path": cmd_path, "keystones": cmd_keystones,
             "orphans": cmd_orphans, "realms": cmd_realms, "brief": cmd_brief,
             "canvas": cmd_canvas, "forcemap": cmd_forcemap,
-            "stale_refs": cmd_stale_refs}[a.cmd](g, a)
+            "stale_refs": cmd_stale_refs, "challenged": cmd_challenged}[a.cmd](g, a)
     print(json.dumps(data, indent=2)) if a.json else render(a.cmd, data)
     return 0
 

@@ -49,6 +49,35 @@ def tokens(text: str) -> list[str]:
     return [t for t in TOKEN.findall(text.lower()) if t not in STOP]
 
 
+CHALLENGE = re.compile(r"^\*\*CHALLENGED\s+(\d{4}-\d{2}-\d{2})\s*:?\s*\*\*:?\s*(.*)$", re.I)
+
+
+def strip_challenged(body: str) -> str:
+    """Drop paragraphs carrying a `**CHALLENGED <date>:**` marker, and the marker.
+
+    Law is the highest-consequence consumer of a note, so a claim under open
+    doubt must not reach it. A marker placed before any claim doubts the whole
+    note; that note proposes nothing at all."""
+    lines = body.splitlines()
+    drop: set[int] = set()
+    for i, line in enumerate(lines):
+        if not CHALLENGE.match(line.strip()):
+            continue
+        drop.add(i)
+        j = i + 1
+        while j < len(lines) and lines[j].strip() and not CHALLENGE.match(lines[j].strip()):
+            drop.add(j); j += 1
+        end = i - 1
+        while end >= 0 and not lines[end].strip():
+            end -= 1
+        if end < 0:
+            return ""
+        while end >= 0 and lines[end].strip() and not lines[end].lstrip().startswith("#") \
+                and not CHALLENGE.match(lines[end].strip()):
+            drop.add(end); end -= 1
+    return "\n".join(l for i, l in enumerate(lines) if i not in drop)
+
+
 def read_note(p: Path) -> dict | None:
     raw = p.read_text(encoding="utf-8", errors="replace")
     m = FRONT.match(raw)
@@ -58,7 +87,7 @@ def read_note(p: Path) -> dict | None:
             if ":" in line:
                 k, _, v = line.partition(":")
                 meta[k.strip()] = v.strip().strip('"')
-    body = raw[m.end():] if m else raw
+    body = strip_challenged(raw[m.end():] if m else raw)
     return {"path": p, "name": p.stem, "realm": p.parts[-3], "meta": meta, "body": body}
 
 
