@@ -200,3 +200,120 @@ memory-graph brief verify gate false-green   # §6-ready markdown, top 5 notes
 Ranked by term match, authored links listed, invalidated notes excluded —
 history must not brief new work. Curate before pasting; it's a draft, not an
 oracle, and it says so in its own header comment.
+
+### `memory-graph spheregrid` — the atlas that holds still
+
+The force map makes every edge a force, so a note that reaches into five realms
+gets dragged to the barycentre and the realm structure smears. It fights that
+with three separate corrections — crippled boundary springs, a per-realm field,
+a pre-pass that packs anchors before physics starts — which is three attempts to
+make a simulation stop simulating.
+
+This one assigns positions instead.
+
+```bash
+memory-graph spheregrid                        # centred on this project
+memory-graph spheregrid --center pi-cluster    # centred somewhere else
+memory-graph spheregrid --min-galaxy 4         # under 4 notes renders as minor
+```
+
+- the **anchor** sits at the hub — the note with the most authored inbound links
+  from inside its own realm
+- every other note joins a **pod**: a ring of up to six notes that all declare
+  the same `type` in frontmatter, chained outward from the hub by visible track
+- **hop distance** from the anchor survives as lightness, and in the tooltip
+
+Radius stays readable, and the output is byte-identical on every run over an
+unchanged corpus — so a place on the map can be pointed at twice. That is the
+thing the force map cannot do.
+
+**There is no centre.** Realms are peers packed to fill the frame, largest first,
+each taking the free spot nearest the middle. An earlier version put `--center`
+at the origin and ranked the rest by corridor distance, which made one arbitrary
+realm the subject of the whole map — pi-cluster sat in the middle because it was
+the biggest, which is not a reason. `--center` now only marks *where you are*.
+
+**Position encodes type, not distance.** Hop distance was a real signal, but it
+competed with `type` for the same axis and type is the one you can act on: the
+notes already declare it (45 feedback, 31 project, 19 reference, 4 user across
+this vault), so the make-up of a realm is legible before you read a label. Pods
+of one type chain outward from the anchor, and rows fill to **capacity** rather
+than a fixed fan — a fan put a two-pod group at the same bearing on consecutive
+rows, one pod directly behind the other, which read as a spike shooting out of
+the hub while the rest of the disc stayed empty. How many pods fit is a question
+about arc length at a given radius, so that is what gets asked.
+
+**Three kinds of line, and they must not be confusable.** Steel and straight is
+**track** — pod rings and the spokes that chain them. It is structure, it carries
+no data, and it never lights up. A tinted curve is a **link**; a dotted one is
+inferred. Between realm discs, a lavender ribbon is a **corridor**. Hovering a
+note pushes track down and lifts its links, so the only lines that answer are
+real ones.
+
+Physics survives as animation only. Springs pull each node to its assigned slot;
+dragging displaces a node and letting go returns it. Nothing at run time can
+change where a note lives.
+
+**One world, camera moves.** Nothing is re-laid-out on navigation, so pi-cluster
+is always in the same place and you can learn where things are. Every note draws
+at every zoom — the packed lattice *is* the picture, and a level-of-detail rule
+that hides it until you zoom in is answering a question this corpus does not ask.
+Collapsing a realm to a single blob is the graceful degradation for zooming far
+out, not the resting state.
+
+**`--center` is the entry point, not a preference.** An agent working in
+pi-cluster enters the map at pi-cluster's root, so radius means "hops from where
+I came in." Default is `auto`: the realm slug for the current directory, which is
+the absolute path with every separator turned into a dash — the same rule Claude
+Code uses to name the folder.
+
+Expired notes stay drawn as hollow outlines. They are terrain, not deletions —
+the FFX grid keeps its unlit regions on screen, and so does this. Challenged
+claims get a broken ring. Inferred links are ghost chords, **off by default**:
+vocabulary overlap drawn at the same weight as something you wrote is how machine
+echo starts looking like corroboration.
+
+**Zoom discloses; it does not just magnify.** Click a galaxy and it becomes the
+subject of the frame — the camera goes in and everything else recedes to 16%,
+without re-laying anything out, so you can still see where you are relative to
+your neighbours. Escape, or a click into the void, backs out. Note labels tier
+on zoom measured against the fitted scale (so a laptop and the wall display
+behave alike): anchors, then hubs, then everything. A focused galaxy names all
+of its notes regardless.
+
+Labels are **placed**, not just drawn. The spiral packs notes 21 units apart
+while a name is ten times that wide, so candidates are ranked — hovered, then
+anchors, then by degree — and any whose box overlaps one already placed is
+dropped. The important ones get the room; the rest wait for zoom or hover.
+
+#### The art direction is load-bearing
+
+The reference is FFX's sphere grid, and its defining feature is that nodes sit
+**on visible track** — small rings joined by line, not a field of dots. Our links
+are semantic: they say what relates to what, they do not describe the shape you
+are standing on. So the shape gets drawn too, and the generator computes it,
+because the generator is the thing that knows which `type` a note declared.
+**The track carries no data on purpose** — it is the board, and the chords are
+the moves.
+
+The rest, in order of how much it changed:
+
+- **The void has depth.** A seeded 900-point starfield in world space, so it
+  parallaxes for free when you pan, plus a screen-space vignette. Flat black
+  reads as *nothing here*; a field with depth reads as space with things in it.
+- **Bloom is coloured and local.** First attempt stacked twelve discs at `.05`
+  over 4.4× the node radius and fogged the lattice, the rims and the ticks into
+  milk. Bloom now uses a saturated, *darker* colour than the body — blooming the
+  near-white body colour is what made the haze.
+- **Nodes are beads, not dots.** One offset highlight arc reads as a lit sphere
+  and costs one more `arc()`, where a per-node gradient would cost 106
+  allocations a frame.
+- **The rim is an instrument, not a diagram.** A fine ring with 36 graduations,
+  every ninth one long. A dashed circle costs the same and says less.
+- **Type says what kind of thing you're reading.** Tracked small caps for place
+  names, monospace for file names. One of these is territory; one is files.
+
+Glow is a cached sprite per colour, not `shadowBlur` — same falloff, paid once
+instead of 106 times a frame.
+
+`?ambient` gives the wall display a slow tour with no chrome.
