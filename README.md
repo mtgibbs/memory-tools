@@ -405,3 +405,31 @@ graduations below the size where they resolve.
 > spike fixes are reasoned, not verified.
 
 `?ambient` gives the wall display a slow tour with no chrome.
+
+#### `--data`, and the Obsidian plugin
+
+```bash
+memory-graph spheregrid --data ~/.claude/projects/spheregrid.json
+```
+
+Writes the layout payload instead of a page. `obsidian-plugin/` renders that file
+as a workspace view; click a note and it opens in a split beside the map.
+
+**There is one renderer.** `templates/spheregrid.render.js` is inlined into the
+standalone HTML by this command and *imported* by the plugin — not copied. Two
+renderers would drift, and the drift would be invisible until someone noticed the
+two views disagreed about the map. Layout is not reimplemented either: it is
+computed here and the plugin is a viewer.
+
+`tests/pane-hittest.py` covers the mapping that made this hard: the renderer
+originally sized itself from `innerWidth` and hit-tested with `ev.clientX`, which
+are the canvas's own box on a standalone page and wrong by the pane's origin
+anywhere else — so in Obsidian nothing was clickable and only panning worked. The
+test puts the canvas at an offset in a differently-sized box and clicks the exact
+centre of eight nodes.
+
+The plugin is the answer to "should we build our own notes app". The thing worth
+having is Obsidian with a different graph view, and building it standalone means
+rebuilding editing, search, backlinks, file watching, conflict handling, sync and
+mobile — the ninety percent of Obsidian that is not the graph — to get a view you
+can inject instead. The right-hand pane there **is** Obsidian's pane.

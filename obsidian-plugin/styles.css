@@ -1,0 +1,19 @@
+/* contentEl has no intrinsic height, so the canvas needs an explicit box to
+   measure — the renderer sizes itself from getBoundingClientRect, and a canvas
+   in a zero-height parent measures zero and renders nothing. */
+.spheregrid-view { padding: 0; overflow: hidden; position: relative; height: 100%; background: #05060a; }
+.spheregrid-view > canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; display: block; }
+.spheregrid-view > canvas.grabbing { cursor: grabbing; }
+.spheregrid-tip {
+  position: absolute; pointer-events: none; z-index: 3; display: none;
+  background: #15151b; color: #ddd; border: 1px solid #2e2e38;
+  padding: 5px 9px; border-radius: 5px; max-width: 340px; line-height: 1.5;
+  font-size: 12px;
+}
+.spheregrid-tip b { color: #fff; font-weight: 600; }
+.spheregrid-empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center; gap: 10px;
+  padding: 40px; color: var(--text-muted); font-size: 13px; line-height: 1.7;
+}
+.spheregrid-empty code { user-select: all; font-size: 12px; color: var(--text-normal); }
