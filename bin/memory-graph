@@ -14,6 +14,7 @@ Links are reported with provenance: `authored` links are hand-written,
 `inferred` ones come from the block infer-links.py maintains. Weight them
 accordingly — an inferred link is a suggestion, not an assertion.
 
+  graph.py where [--path DIR]            which realm this directory is, and its borders
   graph.py neighbors <note> [--hops N]   what connects to this, both directions
   graph.py path <from> <to>              how two notes are related, if at all
   graph.py keystones [-n N]              most-linked-to notes
@@ -527,11 +528,19 @@ def cmd_forcemap(g: Graph, a) -> dict:
             "identity_notes": sum(1 for n in nodes if n["gold"])}
 
 
-def _realm_slug_for_cwd() -> str:
-    """The vault folder name Claude Code derives from a working directory:
-    the absolute path with every separator turned into a dash. This is the hook
-    that lets a session ask "which galaxy am I in?" without being told."""
-    return str(Path.cwd().resolve()).replace(os.sep, "-")
+def realm_slug_for(path: Path | None = None) -> str:
+    """The vault folder name Claude Code derives from a working directory. This
+    is the hook that lets a session ask "which galaxy am I in?" without being
+    told.
+
+    Dots collapse to dashes as well as separators — not a guess: the vault holds
+    `…-mtgibbs-xyz--claude-worktrees-feat-ai-homelab-icons`, and only the
+    dot-collapsing rule produces that doubled dash from
+    `…/mtgibbs-xyz/.claude-worktrees/feat-…`. Separator-only mapping silently
+    misses every worktree checkout, which is exactly where a session is most
+    likely to be sitting when it asks."""
+    base = (path or Path.cwd()).resolve()
+    return str(base).replace(os.sep, "-").replace(".", "-")
 
 
 def _anchor_of(g: Graph, members: list[str]) -> str:
@@ -560,6 +569,84 @@ def _hops_from(g: Graph, start: str, within: set[str]) -> dict[str, int]:
                 hop[nxt] = hop[cur] + 1
                 q.append(nxt)
     return hop
+
+
+def cmd_where(g: Graph, a) -> dict:
+    """Which galaxy is this directory, and what is next to it.
+
+    A session opens in a directory and has no idea the rest of the vault exists.
+    The obvious fix is a master router at the vault root listing every realm —
+    and it is the wrong fix, because a router you LOAD has to stay small. At a
+    few hundred realms that document is ~25KB of index burned every session to
+    answer a question that needs three entries. A router you QUERY has no size
+    limit, so this returns only the realm you are in and what borders it.
+
+    Worktree checkouts derive slugs like `<realm>--claude-worktrees-…`. They are
+    the same repo, so this reports the parent realm as where you actually are —
+    the rule memory-amend already applies to constitutional scope."""
+    base = Path(a.path).expanduser().resolve() if a.path else Path.cwd().resolve()
+    slug = realm_slug_for(base)
+
+    live = {r for r in g.realm.values()}
+    on_disk = {p.name for p in g.vault.iterdir() if p.is_dir()} if g.vault.is_dir() else set()
+
+    realm, parent = None, None
+    if slug in live:
+        realm = slug
+    else:
+        # a worktree checkout answers for the repo it was cut from
+        cands = [r for r in live if slug.startswith(r + "--")]
+        if cands:
+            realm, parent = max(cands, key=len), max(cands, key=len)
+    state = "notes" if realm else ("empty" if slug in on_disk else "none")
+
+    out = {"cwd": str(base), "slug": slug, "state": state, "realm": realm,
+           "worktree_of": parent, "notes": 0, "invalidated": 0, "challenged": 0,
+           "anchor": None, "entry_points": [], "corridors": [], "siblings": []}
+    if not realm:
+        out["realms_available"] = sorted(live)
+        return out
+
+    members = sorted(n for n in g.realm if g.realm[n] == realm
+                     and n.split("/")[-1] != "MEMORY")
+    out["notes"] = len(members)
+    out["invalidated"] = sum(1 for n in members if n in g.status)
+    out["challenged"] = sum(len(g.challenged.get(n, [])) for n in members)
+    out["siblings"] = sorted(r.split("--", 1)[1] for r in live
+                             if r.startswith(realm + "--"))
+    if not members:
+        return out
+
+    out["anchor"] = _anchor_of(g, members).split("/")[-1]
+    # entry points are ranked on AUTHORED inbound only — the same rule keystones
+    # uses. An agent asking "where do I start reading" must not be handed the
+    # note that merely shares the most vocabulary.
+    ranked = sorted(members, key=lambda n: (
+        -sum(1 for _, p in g.inn[n] if p == "authored"), -len(g.undirected(n)), n))
+    for n in ranked[: a.n]:
+        auth = sum(1 for _, p in g.inn[n] if p == "authored")
+        if not auth:
+            break
+        out["entry_points"].append({"note": n.split("/")[-1], "authored_inbound": auth,
+                                    "invalidated": n in g.status})
+
+    corr: dict[str, dict] = {}
+    for src in members:
+        for dst, prov in g.out[src]:
+            if dst not in g.realm or g.realm[dst] == realm:
+                continue
+            c = corr.setdefault(g.realm[dst], {"realm": g.realm[dst], "links": 0, "authored": 0})
+            c["links"] += 1
+            c["authored"] += int(prov == "authored")
+    for dst in members:
+        for src, prov in g.inn[dst]:
+            if g.realm.get(src) in (None, realm):
+                continue
+            c = corr.setdefault(g.realm[src], {"realm": g.realm[src], "links": 0, "authored": 0})
+            c["links"] += 1
+            c["authored"] += int(prov == "authored")
+    out["corridors"] = sorted(corr.values(), key=lambda c: (-c["authored"], -c["links"], c["realm"]))
+    return out
 
 
 def cmd_spheregrid(g: Graph, a) -> dict:
@@ -654,7 +741,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
     # ---- which galaxy is the centre --------------------------------------
     want = a.center
     if want in (None, "auto"):
-        slug = _realm_slug_for_cwd()
+        slug = realm_slug_for()
         want = slug if slug in by_realm else None
         # a realm that exists but holds only its MEMORY.md is not "not a realm" —
         # it is a project that has not written anything down yet, and saying so
@@ -950,6 +1037,37 @@ def render(cmd: str, data: dict) -> None:
         print(f"{data['canvas']}: {data['notes']} notes, {data['zones']} zones, "
               f"{data['cross_realm_edges']} cross-realm edges "
               f"({data['boundary_edges']} boundary, purple)")
+    elif cmd == "where":
+        if data["state"] == "none":
+            print(f"{data['cwd']}\n  no vault realm — nothing has been written down here")
+            print(f"  ({len(data['realms_available'])} realms exist elsewhere in the vault)")
+            return
+        if data["state"] == "empty" or not data["notes"]:
+            print(f"{data['cwd']}\n  realm exists but holds no notes yet — "
+                  "anything written here starts it")
+            return
+        wt = ""
+        if data["worktree_of"] and data["slug"] != data["realm"]:
+            wt = f"  ← via worktree {data['slug'][len(data['realm']) + 2:]}"
+        print(f"{data['realm']}{wt}")
+        flags = []
+        if data["invalidated"]:
+            flags.append(f"{data['invalidated']} invalidated")
+        if data["challenged"]:
+            flags.append(f"{data['challenged']} open challenge(s)")
+        print(f"  {data['notes']} notes" + (" · " + ", ".join(flags) if flags else "")
+              + f" · about: {data['anchor']}")
+        if data["entry_points"]:
+            print("  start here")
+            for e in data["entry_points"]:
+                dead = "  ⚠ invalidated" if e["invalidated"] else ""
+                print(f"    {e['authored_inbound']:>3} in   {e['note']}{dead}")
+        if data["corridors"]:
+            print("  borders")
+            for c in data["corridors"]:
+                print(f"    {c['authored']:>3} authored ({c['links']:>2} total)  {c['realm']}")
+        if data["siblings"]:
+            print(f"  worktrees: {', '.join(data['siblings'])}")
     elif cmd == "spheregrid":
         why = {"cwd": "from this working directory", "flag": "as asked",
                "empty": "this project has no notes yet — showing the largest realm",
@@ -983,6 +1101,9 @@ def main() -> int:
     sub.add_parser("realms")
     p = sub.add_parser("canvas"); p.add_argument("--out", default=None)
     p = sub.add_parser("forcemap"); p.add_argument("--out", default=None)
+    p = sub.add_parser("where"); p.add_argument("--path", default=None,
+                   help="ask about another directory instead of the current one")
+    p.add_argument("-n", type=int, default=5, help="how many entry points to list")
     p = sub.add_parser("spheregrid"); p.add_argument("--out", default=None)
     p.add_argument("--center", default="auto",
                    help="realm at the origin: a realm slug/substring, or 'auto' (this cwd)")
@@ -995,6 +1116,7 @@ def main() -> int:
     data = {"neighbors": cmd_neighbors, "path": cmd_path, "keystones": cmd_keystones,
             "orphans": cmd_orphans, "realms": cmd_realms, "brief": cmd_brief,
             "canvas": cmd_canvas, "forcemap": cmd_forcemap, "spheregrid": cmd_spheregrid,
+            "where": cmd_where,
             "stale_refs": cmd_stale_refs, "challenged": cmd_challenged}[a.cmd](g, a)
     print(json.dumps(data, indent=2)) if a.json else render(a.cmd, data)
     return 0
