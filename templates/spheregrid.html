@@ -40,7 +40,8 @@ html,body{margin:0;height:100%;background:#08080b;overflow:hidden;
  <span class="sw" style="background:none;border:1px solid #ff5d3d;width:7px;height:7px"></span>open challenge on a claim<br>
  <span class="sw" style="background:#e8e8ef"></span>anchor — what the realm is about<br>
  radius = hops from the anchor &middot; angle = position in its realm<br>
- scroll to zoom &middot; drag to pan &middot; click a galaxy to fly &middot; click a note for Obsidian
+ scroll to zoom &middot; drag to pan &middot; click a galaxy to focus it<br>
+ Esc or click the void to back out &middot; click a note to open it in Obsidian
 </div>
 <div id="panels">
 <details id="disp" open><summary>display</summary></details>
@@ -67,7 +68,7 @@ const GOLD = "#ffd54a", ASH = "#5c5c66", CHAL = "#ff5d3d", ACCENT = "#ff7a33";
 // the same weight as something you wrote is how machine echo starts looking
 // like corroboration.
 const DEFAULTS = { ghosts: false, rings: true, chords: 0.17, realmLabels: true,
-                   noteLabels: "hover", glow: true, motion: true };
+                   noteLabels: "auto", glow: true, motion: true };
 const P = { ...DEFAULTS };
 try { Object.assign(P, JSON.parse(localStorage.getItem("spheregrid-opts") || "{}")); } catch (e) {}
 const save = () => { try { localStorage.setItem("spheregrid-opts", JSON.stringify(P)); } catch (e) {} };
@@ -141,7 +142,9 @@ addEventListener("resize", () => {
   if (!had) fit();                                  // first real layout: adopt it
 });
 function flyTo(r, pad) {
-  tgtS = Math.min(2.2, Math.min(innerWidth, innerHeight) / (r.rad * 2 + (pad || 220)));
+  // the old 2.2 ceiling meant a twelve-note galaxy still sat small in the frame
+  // after you asked to go into it, which is most of why zoom felt inert
+  tgtS = Math.min(7, Math.min(innerWidth, innerHeight) / (r.rad * 2 + (pad || 220)));
   tgtX = innerWidth / 2 - r.x * tgtS;
   tgtY = innerHeight / 2 - r.y * tgtS;
 }
@@ -207,6 +210,7 @@ function draw(t) {
     const hot = hoverRealm && (a === hoverRealm || b === hoverRealm);
     ctx.strokeStyle = c.auth ? (hot ? "rgba(255,170,120,.75)" : "rgba(186,168,224,.38)")
                              : "rgba(150,150,170,.14)";
+    ctx.globalAlpha = Math.max(dim(a), dim(b));
     ctx.lineWidth = (hot ? 2.2 : Math.min(3, 0.7 + c.n * 0.28)) * k;
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     if (a.work !== b.work) {                        // a lock sits on the crossing
@@ -217,9 +221,11 @@ function draw(t) {
     }
   }
 
+  ctx.globalAlpha = 1;
   for (const r of R) {
     const d = detail(r);
     r.d = d;
+    ctx.globalAlpha = dim(r);
     if (P.glow) {                                   // the field: a soft well per galaxy
       const g = ctx.createRadialGradient(r.x, r.y, r.rad * 0.15, r.x, r.y, r.rad * 1.25);
       g.addColorStop(0, "hsla(" + r.hue + ",70%,60%," + (0.13 - d * 0.05).toFixed(3) + ")");
@@ -228,7 +234,7 @@ function draw(t) {
       ctx.beginPath(); ctx.arc(r.x, r.y, r.rad * 1.25, 0, 7); ctx.fill();
     }
     if (d > 0) {                                    // rim of the disc
-      ctx.globalAlpha = d;
+      ctx.globalAlpha = d * dim(r);
       ctx.strokeStyle = "hsla(" + r.hue + ",55%,62%,.42)";
       ctx.lineWidth = 1.1 * k;
       ctx.setLineDash([5 * k, 7 * k]);
@@ -254,7 +260,8 @@ function draw(t) {
     if (d <= 0) continue;                           // both ends collapsed into blobs
     if (e.g && !P.ghosts) continue;
     const hot = e.s === hi || e.t === hi;
-    ctx.globalAlpha = hot ? 0.85 : d * (e.g ? 0.16 : P.chords);
+    ctx.globalAlpha = (hot ? 0.85 : d * (e.g ? 0.16 : P.chords))
+                    * Math.max(dim(a.R), dim(b.R));
     ctx.strokeStyle = hot ? "#fff" : (e.g ? "#8f8fa8" : (e.b ? "#c39bf5" : "#9aa0b8"));
     ctx.lineWidth = (hot ? 1.7 : 0.9) * k;
     if (e.g) ctx.setLineDash([2 * k, 5 * k]); else ctx.setLineDash([]);
@@ -285,7 +292,7 @@ function draw(t) {
       ctx.globalAlpha = 1;
     } else r.blobR = 0;
     if (r.d <= 0) continue;
-    ctx.globalAlpha = r.d;
+    ctx.globalAlpha = r.d * dim(r);
     for (const n of r.members) {
       const rr = n.rad * (n.anchor ? 1.7 : 1);
       if (n.dead) {                                 // still terrain, just unlit
@@ -318,6 +325,13 @@ function draw(t) {
     ctx.globalAlpha = 1;
   }
 
+  // Zoom earns its keep by disclosing more, not by making the same dots bigger.
+  // Tiers are measured against the fitted scale so they behave the same on a
+  // laptop and on the wall display, where baseS differs by 3x.
+  const z = scale / (baseS || 1);
+  const tier = P.noteLabels !== "auto" ? P.noteLabels
+             : z > 2.8 ? "all" : z > 1.5 ? "hubs" : "hover";
+
   // labels last so nothing paints over them
   ctx.textAlign = "center";
   ctx.lineJoin = "round";
@@ -335,6 +349,7 @@ function draw(t) {
     if (r.d <= 0 && r.minor && r !== hoverRealm) continue;
     const inside = r.d > 0;
     const y = inside ? r.y - r.rad + 15 * k : r.y - (r.blobR || 6) - 11 * k;
+    ctx.globalAlpha = dim(r);
     ctx.fillStyle = r.centre ? "rgba(255,160,95,.97)" : "hsla(" + r.hue + ",68%,78%,.92)";
     const fs = Math.max(9.5, Math.min(13, r.rad * 0.09));
     ctx.font = "600 " + fs * k + "px system-ui";
@@ -344,38 +359,68 @@ function draw(t) {
       ctx.font = (fs * 0.72 * k) + "px system-ui";
       label(r.n + " notes", r.x, y + fs * 0.95 * k);
     }
-  }
-  ctx.font = (11 / scale) + "px system-ui";
-  for (const r of R) {
-    if (r.d <= 0) continue;
-    ctx.globalAlpha = r.d;
-    for (const n of r.members) {
-      const near = hoverNode && (n === hoverNode || hoverNode.adj.has(n.i));
-      const show = P.noteLabels === "all" || near || n.anchor ||
-                   (P.noteLabels === "hubs" && n.conn >= 8);
-      if (!show) continue;
-      ctx.fillStyle = near ? "#fff" : n.anchor ? "rgba(238,238,245,.94)" : "rgba(194,194,206,.78)";
-      label(n.stem, n.x, n.y + n.rad * (n.anchor ? 1.7 : 1) + 12 / scale);
-    }
     ctx.globalAlpha = 1;
   }
+  // Note labels are placed, not just drawn. The spiral packs nodes 21 units
+  // apart while a name is ten times that wide, so a galaxy naming everything it
+  // holds produced stacked, unreadable text. Candidates are ranked, then each is
+  // dropped if its box overlaps one already placed — the important ones get the
+  // room and the rest wait for you to zoom or hover.
+  ctx.font = (11 / scale) + "px system-ui";
+  const cand = [];
+  for (const r of R) {
+    if (r.d <= 0) continue;
+    for (const n of r.members) {
+      const near = hoverNode && (n === hoverNode || hoverNode.adj.has(n.i));
+      const show = tier === "all" || near || n.anchor || r === focusRealm ||
+                   (tier === "hubs" && n.conn >= 8);
+      if (show) cand.push({ n, r, near, rank: near ? 0 : n.anchor ? 1 : 2 - n.conn / 1000 });
+    }
+  }
+  cand.sort((a, b) => a.rank - b.rank);
+  const taken = [];
+  const pad = 3 / scale, lh = 13 / scale;
+  for (const c of cand) {
+    const n = c.n;
+    const w = ctx.measureText(n.stem).width + pad * 2;
+    const x = n.x, y = n.y + n.rad * (n.anchor ? 1.7 : 1) + 12 / scale;
+    const box = [x - w / 2, y - lh * 0.8, x + w / 2, y + lh * 0.3];
+    if (taken.some(b => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) continue;
+    taken.push(box);
+    ctx.globalAlpha = c.r.d * dim(c.r);
+    ctx.fillStyle = c.near ? "#fff" : n.anchor ? "rgba(238,238,245,.94)" : "rgba(194,194,206,.78)";
+    label(n.stem, x, y);
+  }
+  ctx.globalAlpha = 1;
   requestAnimationFrame(draw);
 }
 
 // ---- interaction ----------------------------------------------------------
 let dragNode = null, panning = false, moved = 0, px = 0, py = 0;
-let hoverNode = null, hoverRealm = null;
+let hoverNode = null, hoverRealm = null, focusRealm = null;
+// "clicked on and zoomed to, where another galaxy opens as the new center in
+// that space" — the camera move alone does not read as that, because the rest of
+// the map keeps competing for the eye. Focus recedes everything else instead of
+// re-laying anything out, so position stays stable and you can still see where
+// the galaxy you are in sits relative to its neighbours.
+const dim = r => (!focusRealm || r === focusRealm) ? 1 : 0.16;
+function setFocus(r) {
+  focusRealm = r;
+  if (r) flyTo(r, 90); else flyOut();
+}
+addEventListener("keydown", ev => { if (ev.key === "Escape") setFocus(null); });
 const world = ev => [(ev.clientX - tx) / scale, (ev.clientY - ty) / scale];
 function pick(ev) {
   const [wx, wy] = world(ev);
-  let bn = null, bd = 1e9, br = null;
+  let bn = null, bd = 1e9, br = null, brd = 1e9;
   for (const r of R) {
     const dr = Math.hypot(r.x - wx, r.y - wy);
-    if (r.d <= 0) {
-      if (dr < Math.max(r.blobR + 8 / scale, 14 / scale)) br = r;
-      continue;
-    }
-    if (dr > r.rad + 30) continue;
+    // A realm is hit by its DISC. This used to be gated on the blob level of
+    // detail, so when blobs stopped triggering, click-to-fly quietly died and
+    // zoom degraded to plain magnification with nothing to aim it at.
+    const reach = r.d > 0 ? r.rad : Math.max(r.blobR + 8 / scale, 14 / scale);
+    if (dr < reach && dr < brd) { br = r; brd = dr; }
+    if (r.d <= 0 || dr > r.rad + 30) continue;
     for (const n of r.members) {
       const d = Math.hypot(n.x - wx, n.y - wy);
       if (d < Math.max(n.rad + 5 / scale, 10 / scale) && d < bd) { bn = n; bd = d; }
@@ -418,12 +463,14 @@ cv.addEventListener("pointerup", ev => {
   cv.classList.remove("grabbing");
   if (moved < 5) {
     const [n, r] = pick(ev);
-    if (n) {
+    if (!n && !r) setFocus(null);          // clicking the void backs all the way out
+    else if (!n && r) setFocus(r === focusRealm ? null : r);
+    else if (n) {
       // absolute path, not vault+file: an unresolvable file= makes Obsidian
       // create an empty note at the vault root instead of opening anything
       location.href = "obsidian://open?path=" +
         encodeURIComponent(DATA.root + "/" + n.realm + "/memory/" + n.stem + ".md");
-    } else if (r) flyTo(r);
+    }
   }
   dragNode = null; panning = false;
 });
@@ -434,7 +481,7 @@ cv.addEventListener("wheel", ev => {
   scale = Math.max(baseS * 0.35, Math.min(6, scale * f));
   tx = ev.clientX - wx * scale; ty = ev.clientY - wy * scale;
 }, { passive: false });
-cv.addEventListener("dblclick", () => flyOut());
+cv.addEventListener("dblclick", () => setFocus(null));
 
 // ---- panels ---------------------------------------------------------------
 const disp = document.getElementById("disp");
@@ -459,7 +506,7 @@ ci.addEventListener("input", () => { P.chords = +ci.value; cvv.textContent = P.c
 disp.appendChild(cl);
 const nl = document.createElement("label");
 nl.innerHTML = "<span>note labels</span><select>" +
-  ["hover", "hubs", "all"].map(m => "<option value=" + m + ">" + m + "</option>").join("") + "</select>";
+  ["auto", "hover", "hubs", "all"].map(m => "<option value=" + m + ">" + m + "</option>").join("") + "</select>";
 const ns = nl.querySelector("select");
 ns.value = P.noteLabels;
 ns.addEventListener("change", () => { P.noteLabels = ns.value; save(); });

@@ -262,4 +262,17 @@ claims get a broken ring. Inferred links are ghost chords, **off by default**:
 vocabulary overlap drawn at the same weight as something you wrote is how machine
 echo starts looking like corroboration.
 
+**Zoom discloses; it does not just magnify.** Click a galaxy and it becomes the
+subject of the frame — the camera goes in and everything else recedes to 16%,
+without re-laying anything out, so you can still see where you are relative to
+your neighbours. Escape, or a click into the void, backs out. Note labels tier
+on zoom measured against the fitted scale (so a laptop and the wall display
+behave alike): anchors, then hubs, then everything. A focused galaxy names all
+of its notes regardless.
+
+Labels are **placed**, not just drawn. The spiral packs notes 21 units apart
+while a name is ten times that wide, so candidates are ranked — hovered, then
+anchors, then by degree — and any whose box overlaps one already placed is
+dropped. The important ones get the room; the rest wait for zoom or hover.
+
 `?ambient` gives the wall display a slow tour with no chrome.
