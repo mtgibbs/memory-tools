@@ -160,16 +160,24 @@ if (!fit()) {
   const retry = () => { if (!fit()) requestAnimationFrame(retry); };
   requestAnimationFrame(retry);
 }
+// An Obsidian pane is often mid-layout when the view opens: the canvas has a
+// small but non-zero box, fit() succeeds against it, and the camera locks to a
+// scale and offset computed for a box that never existed for long. The old rule
+// only re-fitted when scale was still 0, so that wrong camera survived every
+// later resize — the map sat at the wrong zoom AND the wrong offset, which is
+// why clicks landed between nodes and toggled realm focus instead of opening
+// anything. Until the user moves the camera themselves, it stays fitted.
+let userMoved = false;
 const onResize = () => {
-  const had = scale > 0;
   measure();
-  if (!had) fit();                                  // first real layout: adopt it
+  if (!userMoved || !(scale > 0)) fit();
 };
 addEventListener("resize", onResize);
 // A pane can resize while the window does not — split dragged, sidebar toggled.
 const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) : null;
 if (ro) ro.observe(cv);
 function flyTo(r, pad) {
+  userMoved = true;
   // the old 2.2 ceiling meant a twelve-note galaxy still sat small in the frame
   // after you asked to go into it, which is most of why zoom felt inert
   tgtS = Math.min(7, Math.min(vw, vh) / (r.rad * 2 + (pad || 220)));
@@ -572,7 +580,8 @@ function pick(ev) {
     if (r.d <= 0 || dr > r.rad + 30) continue;
     for (const n of r.members) {
       const d = Math.hypot(n.x - wx, n.y - wy);
-      if (d < Math.max(n.rad + 5 / scale, 10 / scale) && d < bd) { bn = n; bd = d; }
+      const hit = Math.max(n.rad * (n.anchor ? 1.7 : 1) + 4 / scale, 9 / scale);
+      if (d < hit && d < bd) { bn = n; bd = d; }
     }
   }
   return [bn, br];
@@ -591,7 +600,7 @@ cv.addEventListener("pointermove", ev => {
   if (dragNode) {
     const [wx, wy] = world(ev);
     dragNode.x = wx; dragNode.y = wy; dragNode.vx = 0; dragNode.vy = 0;
-  } else if (panning) { tx += cx - px; ty += cy - py; }
+  } else if (panning) { userMoved = true; tx += cx - px; ty += cy - py; }
   px = cx; py = cy;
   if (!dragNode && !panning) {
     const [n, r] = pick(ev);
@@ -623,7 +632,7 @@ cv.addEventListener("pointerup", ev => {
   dragNode = null; panning = false;
 });
 cv.addEventListener("wheel", ev => {
-  ev.preventDefault(); tgtS = null;
+  ev.preventDefault(); tgtS = null; userMoved = true;
   const f = Math.exp(-ev.deltaY * 0.0016);
   const [wx, wy] = world(ev);
   scale = Math.max(baseS * 0.35, Math.min(6, scale * f));
@@ -645,6 +654,10 @@ return {
   settleNow() {
     for (const n of N) { n.x = n.hx; n.y = n.hy; n.vx = 0; n.vy = 0; }
   },
+  /** Draw exactly one frame. pick() reads per-realm detail and visibility that
+   *  only draw() sets, so anything testing hit behaviour without an animation
+   *  loop needs a way to produce that state deliberately. */
+  renderOnce(t) { draw(t || 0); },
   screenOf: n => ({ x: n.x * scale + tx, y: n.y * scale + ty }),
   worldOf: (cx, cy) => ({ x: (cx - tx) / scale, y: (cy - ty) / scale }),
   get focusRealm() { return focusRealm; },

@@ -40,6 +40,8 @@ export interface SphereGridHandle {
   flyOut(): void;
   setFocus(realm: SphereGridRealm | null): void;
   save(): void;
+  /** draw exactly one frame (sets the per-realm state pick() reads) */
+  renderOnce(t?: number): void;
   /** put every node on its assigned slot, skipping the assembly animation */
   settleNow(): void;
   /** world -> canvas-local pixels */

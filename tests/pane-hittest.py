@@ -31,32 +31,32 @@ html,body{margin:0;height:100%%;background:#111;overflow:hidden}
 #pane{position:absolute;left:317px;top:96px;width:820px;height:560px}
 #c{position:absolute;inset:0;width:100%%;height:100%%;display:block}
 #out{position:absolute;left:0;top:0;right:0;background:#000;color:#7fff9f;
- font:16px ui-monospace,monospace;padding:20px;line-height:1.6;z-index:9;white-space:pre}
+ font:15px ui-monospace,monospace;padding:18px;line-height:1.55;z-index:9;white-space:pre}
 </style></head><body>
 <div id="pane"><canvas id="c"></canvas></div><pre id="out">running…</pre>
 <script>
 %(render)s
 const DATA = %(data)s;
-const out = document.getElementById("out");
+const out = document.getElementById("out"), pane = document.getElementById("pane");
+const L = [];
 try {
 let opened = [];
 const cv = document.getElementById("c");
-const SG = createSphereGrid({ canvas: cv, data: DATA, onOpenNote: n => opened.push(n) });
+const SG = createSphereGrid({ canvas: cv, data: DATA, still: true,
+                              onOpenNote: n => opened.push(n) });
 function clickAt(x, y) {
   const o = { clientX: x, clientY: y, pointerId: 1, bubbles: true, button: 0 };
   cv.dispatchEvent(new PointerEvent("pointerdown", o));
   cv.dispatchEvent(new PointerEvent("pointerup", o));
 }
-setTimeout(() => {
- try {
+function scenario(name) {
   SG.settleNow();
-  const r = cv.getBoundingClientRect(), L = [];
-  L.push("canvas box  left " + Math.round(r.left) + "  top " + Math.round(r.top)
-         + "   " + Math.round(r.width) + "x" + Math.round(r.height));
-  L.push("window      " + innerWidth + "x" + innerHeight + "   (deliberately different)");
-  L.push("settled     max |n - home| = "
-         + Math.max.apply(null, SG.N.map(n => Math.hypot(n.x-n.hx, n.y-n.hy))).toFixed(3));
-  L.push("");
+  SG.renderOnce();                 // pick() needs the state a frame produces
+  const r = cv.getBoundingClientRect();
+  L.push(name);
+  L.push("  canvas box  left " + Math.round(r.left) + " top " + Math.round(r.top)
+         + "   " + Math.round(r.width) + "x" + Math.round(r.height)
+         + "    window " + innerWidth + "x" + innerHeight);
   const pick = SG.N.slice().sort((a,b) => b.conn - a.conn).filter(n => {
     const s = SG.screenOf(n);
     return s.x > 30 && s.y > 30 && s.x < r.width - 30 && s.y < r.height - 30;
@@ -68,21 +68,37 @@ setTimeout(() => {
     clickAt(r.left + s.x, r.top + s.y);
     const ok = opened.length === 1 && opened[0].stem === n.stem;
     if (ok) pass++;
-    L.push((ok ? "  ok   " : "  MISS ") + n.stem.slice(0,34).padEnd(36)
-      + "at " + Math.round(s.x) + "," + Math.round(s.y)
-      + (ok ? "" : "  -> " + (opened.map(o=>o.stem).join(",") || "nothing")));
+    else L.push("    MISS " + n.stem + " at " + Math.round(s.x) + "," + Math.round(s.y)
+                + " -> " + (opened.map(o=>o.stem).join(",") || "nothing"));
   }
   opened = []; clickAt(r.left + 6, r.top + 6);
   const voidOk = opened.length === 0;
-  L.push((voidOk ? "  ok   " : "  MISS ") + "corner of the pane opens nothing");
+  if (!voidOk) L.push("    MISS corner of the pane should open nothing");
+  const good = pick.length > 0 && pass === pick.length && voidOk;
+  L.push("  " + (good ? "ok  " : "FAIL") + "  " + pass + "/" + pick.length
+         + " nodes hit exactly, empty space " + (voidOk ? "inert" : "LIVE"));
   L.push("");
-  L.push(pass === pick.length && voidOk
-    ? "PASS  " + pass + "/" + pick.length + " nodes hit exactly, empty space inert"
-    : "FAIL  " + pass + "/" + pick.length + " hit");
-  out.textContent = L.join("\\n");
- } catch (e) { out.textContent = "THREW in test: " + e.message + "\\n" + e.stack; }
-}, 300);
-} catch (e) { out.textContent = "THREW at setup: " + e.message + "\\n" + e.stack; }
+  return good;
+}
+// No frames and no timers. The renderer is created with still:true so it never
+// starts an animation loop, then driven by hand — which also means headless
+// Chrome cannot screenshot before the result exists, and it did, repeatedly:
+// an endless requestAnimationFrame loop stops --virtual-time-budget from ever
+// advancing, so Chrome decides the page is done and captures at load.
+try {
+  const a = scenario("A. canvas offset from the window origin, never resized");
+  // The real Obsidian case: the pane is mid-layout when the view opens, so the
+  // first fit lands on a box that does not survive. Everything after that still
+  // has to line up.
+  pane.style.width = "1050px"; pane.style.height = "620px";
+  pane.style.left = "250px"; pane.style.top = "70px";
+  window.dispatchEvent(new Event("resize"));
+  const b = scenario("B. pane resized and moved after the view opened");
+  L.push(a && b ? "PASS  both scenarios"
+                : "FAIL  " + (a ? "" : "scenario A ") + (b ? "" : "scenario B"));
+  out.textContent = L.join(String.fromCharCode(10));
+} catch (err) { out.textContent = "THREW: " + err.message + " " + err.stack; }
+} catch (e) { out.textContent = "THREW at setup: " + e.message + " " + e.stack; }
 </script></body></html>"""
 
 
