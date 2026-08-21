@@ -671,6 +671,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
     # are placed, so a realm's interior never changes when the map re-centres.
     pos: dict[str, tuple[float, float]] = {}
     hop_of: dict[str, int] = {}
+    spiral_of: dict[str, int] = {}   # position along the realm's spiral
     realms_out: list[dict] = []
     for realm, members in sorted(by_realm.items()):
         mset = set(members)
@@ -706,6 +707,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
             th = GA * i
             pos[m] = (rad * math.cos(th), rad * math.sin(th))
             max_r = max(max_r, rad)
+            spiral_of[m] = i
             if hop_of[m] != seen_hop:
                 seen_hop = hop_of[m]
                 if rad > 6:
@@ -771,7 +773,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                           "gold": bool(TYPE_RE.search(head)),
                           "dead": node in g.status,
                           "chal": len(g.challenged.get(node, [])),
-                          "hop": hop_of[node],
+                          "hop": hop_of[node], "si": spiral_of[node],
                           "deg": sum(1 for _, p in g.inn[node] if p == "authored"),
                           "conn": len(g.undirected(node)),
                           "x": round(ox + lx, 2), "y": round(oy + ly, 2)})

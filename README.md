@@ -275,4 +275,34 @@ while a name is ten times that wide, so candidates are ranked — hovered, then
 anchors, then by degree — and any whose box overlaps one already placed is
 dropped. The important ones get the room; the rest wait for zoom or hover.
 
+#### The art direction is load-bearing
+
+The reference is FFX's sphere grid, and its defining feature is that nodes sit
+**on visible track**. Our links are semantic — they say what relates to what,
+they do not describe the shape you are standing on. So the shape gets drawn too.
+In a phyllotaxis spiral the eye already reads arms at Fibonacci offsets; joining
+each note to `i-3`, `i-5` and `i-8` makes those arms explicit and the disc reads
+as a woven lattice instead of scattered beads. **It carries no data on purpose** —
+it is the board, and the chords are the moves.
+
+The rest, in order of how much it changed:
+
+- **The void has depth.** A seeded 900-point starfield in world space, so it
+  parallaxes for free when you pan, plus a screen-space vignette. Flat black
+  reads as *nothing here*; a field with depth reads as space with things in it.
+- **Bloom is coloured and local.** First attempt stacked twelve discs at `.05`
+  over 4.4× the node radius and fogged the lattice, the rims and the ticks into
+  milk. Bloom now uses a saturated, *darker* colour than the body — blooming the
+  near-white body colour is what made the haze.
+- **Nodes are beads, not dots.** One offset highlight arc reads as a lit sphere
+  and costs one more `arc()`, where a per-node gradient would cost 106
+  allocations a frame.
+- **The rim is an instrument, not a diagram.** A fine ring with 36 graduations,
+  every ninth one long. A dashed circle costs the same and says less.
+- **Type says what kind of thing you're reading.** Tracked small caps for place
+  names, monospace for file names. One of these is territory; one is files.
+
+Glow is a cached sprite per colour, not `shadowBlur` — same falloff, paid once
+instead of 106 times a frame.
+
 `?ambient` gives the wall display a slow tour with no chrome.
