@@ -149,6 +149,17 @@ N.forEach(n => {
   n.glow = n.gold ? "hsl(44,92%,52%)" : "hsl(" + n.R.hue + ",88%,52%)";
 });
 
+// hemisphere captions, only when the map actually has two hemispheres
+const SIDES = (() => {
+  const w = R.filter(r => r.work), p = R.filter(r => !r.work);
+  if (!w.length || !p.length) return null;
+  const mid = g => {
+    const y0 = Math.min(...g.map(r => r.y - r.rad));
+    return { x: g.reduce((s, r) => s + r.x, 0) / g.length, y: y0 - 34 };
+  };
+  return [{ ...mid(p), label: "PERSONAL" }, { ...mid(w), label: "WORK" }];
+})();
+
 // ---- camera ---------------------------------------------------------------
 const cv = document.getElementById("c"), ctx = cv.getContext("2d");
 const tip = document.getElementById("tip");
@@ -501,6 +512,17 @@ function draw(t) {
     label(n.stem, x, y);
   }
   ctx.globalAlpha = 1;
+  if (SIDES) {                                      // the split, said out loud
+    ctx.textAlign = "center";
+    ctx.font = "600 " + 26 * k + "px var(--ui), sans-serif";
+    ctx.letterSpacing = (5 * k) + "px";
+    for (const s of SIDES) {
+      ctx.fillStyle = "rgba(154,160,184,.24)";
+      ctx.fillText(s.label, s.x, s.y);
+    }
+    ctx.letterSpacing = "0px";
+  }
+
   // vignette last, in screen space — pulls the eye to the middle and stops the
   // starfield from fighting the chrome at the corners
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

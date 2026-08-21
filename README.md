@@ -350,4 +350,26 @@ The rest, in order of how much it changed:
 Glow is a cached sprite per colour, not `shadowBlur` — same falloff, paid once
 instead of 106 times a frame.
 
+#### Two vaults, one map
+
+Work memory lives in its own vault, not as prefixed realms inside the personal
+one — deliberately, so neither is ever copied into the other. `--also-work`
+merges a second root at read time and marks its realms `work--`:
+
+```bash
+memory-graph --also-work ~/work-memories/projects spheregrid
+memory-graph --also-work ~/work-memories/projects where     # resolves either side
+```
+
+The work/personal apparatus was already in here — boundary edges, the lock glyph
+on a crossing corridor, `work--` realm names — and **nothing had ever populated
+it**, so the split rendered with everything on one side. Merged, this vault reads
+366 notes across 35 realms, with 8 boundary links over 2 crossing corridors.
+
+Each side gets its own hemisphere. A lock on a crossing only means something if
+there is a line to cross; interleaved, the glyph marks a boundary the layout does
+not have. Packing is still largest-first into the nearest free spot — a realm on
+the wrong side just pays for the distance, so the split is a strong preference
+rather than a wall.
+
 `?ambient` gives the wall display a slow tour with no chrome.
