@@ -41,7 +41,8 @@ html,body{margin:0;height:100%;background:#05060a;overflow:hidden;
  <span class="sw" style="background:none;border:1px solid #64646e;width:7px;height:7px"></span>expired / superseded — still terrain<br>
  <span class="sw" style="background:none;border:1px solid #ff5d3d;width:7px;height:7px"></span>open challenge on a claim<br>
  <span class="sw" style="background:#e8e8ef"></span>anchor — what the realm is about<br>
- radius = hops from the anchor &middot; angle = position in its realm<br>
+ <span style="color:#7d8496">steel</span> = track (structure, never lights up) &middot; tinted curve = a link<br>
+ each ring is one pod of up to six notes of one type &middot; chains fan from the anchor<br>
  scroll to zoom &middot; drag to pan &middot; click a galaxy to focus it<br>
  Esc or click the void to back out &middot; click a note to open it in Obsidian
 </div>
@@ -104,7 +105,7 @@ function glowSprite(col) {
 // Ghosts default OFF. An inferred link is vocabulary overlap, and drawing it at
 // the same weight as something you wrote is how machine echo starts looking
 // like corroboration.
-const DEFAULTS = { ghosts: false, rings: true, lattice: true, chords: 0.17, realmLabels: true,
+const DEFAULTS = { ghosts: false, lattice: true, chords: 0.17, realmLabels: true,
                    noteLabels: "auto", glow: true, motion: true };
 const P = { ...DEFAULTS };
 try { Object.assign(P, JSON.parse(localStorage.getItem("spheregrid-opts") || "{}")); } catch (e) {}
@@ -119,40 +120,32 @@ N.forEach((n, i) => {
   n.vx = 0; n.vy = 0;
   n.R = realmOf.get(n.realm);
   n.R.members.push(n);
-  n.rad = 2.4 + Math.min(7.5, Math.sqrt(n.conn) * 1.55);
+  n.rad = 3.6 + Math.min(11, Math.sqrt(n.conn) * 2.2);
   n.anchor = (n.hop === 0);
   n.ph = (i * 2.399963229728653) % (Math.PI * 2);   // wobble phase, stable per node
 });
 E.forEach(e => { N[e.s].adj.add(e.t); N[e.t].adj.add(e.s); });
 
-// The sphere grid's defining feature is that nodes sit ON visible track, and our
-// links are semantic, not structural — they say what relates to what, they do not
-// describe the shape you are standing on. So the shape gets drawn too. In a
-// phyllotaxis spiral the eye already reads arms at Fibonacci offsets; joining
-// each node to i-3, i-5 and i-8 makes those arms explicit and the disc becomes a
-// woven lattice instead of scattered beads. It carries no data on purpose — it is
-// the board, and the chords are the moves.
-const LATTICE = [];
-for (const r of R) {
-  const by = new Map(r.members.map(n => [n.si, n]));
-  for (const n of r.members)
-    for (const step of [3, 5, 8]) {
-      const m = by.get(n.si - step);
-      if (m) LATTICE.push([n, m, step]);
-    }
-}
+// The pods ARE the track. Each is a small ring of notes of one type, chained
+// outward from the anchor, which is the shape FFX actually draws — small circles
+// joined by visible line, not a field of dots. The generator computes them
+// because it is the thing that knows which type a note declared.
 
-// Lightness carries depth: inner rings read brighter than the rim, so "how far
-// from what this realm is about" is legible before you read a single label.
 R.forEach(r => { if (r.centre) r.hue = 24; });   // the accent is reserved for home
+
+// Lightness carries depth: notes near the anchor read brighter than the rim, so
+// "how far from what this realm is about" survives even though POSITION now
+// encodes type rather than distance.
 function nodeFill(n) {
   if (n.dead) return null;                       // hollow — drawn as an outline
   const deep = n.R.rings ? Math.min(1, n.hop / Math.max(1, n.R.rings)) : 0;
-  const sat = (n.R.centre ? 72 : 56) - deep * 22;
-  return "hsl(" + n.R.hue + "," + sat.toFixed(0) + "%," + (80 - deep * 40).toFixed(0) + "%)";
+  const sat = (n.R.centre ? 78 : 64) - deep * 10;
+  return "hsl(" + n.R.hue + "," + sat.toFixed(0) + "%," + (76 - deep * 22).toFixed(0) + "%)";
 }
 N.forEach(n => {
   n.fill = nodeFill(n);
+  // bloom takes a saturated, darker colour than the body — blooming the body's
+  // near-white is what turned the map into fog the first time
   n.glow = n.gold ? "hsl(44,92%,52%)" : "hsl(" + n.R.hue + ",88%,52%)";
 });
 
@@ -317,27 +310,36 @@ function draw(t) {
         ctx.lineTo(r.x + t1 * Math.cos(a), r.y + t1 * Math.sin(a));
       }
       ctx.stroke();
-      if (P.rings) {                                // one track per hop band
-        ctx.strokeStyle = "hsla(" + r.hue + ",48%,60%,.26)";
-        ctx.lineWidth = 1 * k;
-        for (const rr of r.hopR) {
-          if (rr < 6) continue;
-          ctx.beginPath(); ctx.arc(r.x, r.y, rr, 0, 7); ctx.stroke();
-        }
-      }
       ctx.globalAlpha = 1;
     }
   }
 
   // the board, under the moves
   if (P.lattice) {
-    for (const [a, b, step] of LATTICE) {
-      const r = a.R;
-      if (r.d <= 0) continue;
-      ctx.globalAlpha = r.d * dim(r) * (step === 3 ? 0.30 : step === 5 ? 0.20 : 0.13);
-      ctx.strokeStyle = "hsl(" + r.hue + ",60%,72%)";
-      ctx.lineWidth = 0.8 * k;
-      ctx.beginPath(); ctx.moveTo(a.hx, a.hy); ctx.lineTo(b.hx, b.hy); ctx.stroke();
+    for (const r of R) {
+      if (r.d <= 0 || !r.pods) continue;
+      const al = r.d * dim(r) * (hoverNode ? 0.4 : 1);
+      ctx.strokeStyle = "#7d8496";                    // steel: structure, never data
+      // spokes first, so a pod ring sits on top of the line that feeds it
+      ctx.globalAlpha = al * 0.42;
+      ctx.lineWidth = 1.0 * k;
+      ctx.beginPath();
+      for (const [from, to] of r.podLinks) {
+        const b = r.pods[to];
+        const ax = from < 0 ? r.x : r.x + r.pods[from].x;
+        const ay = from < 0 ? r.y : r.y + r.pods[from].y;
+        ctx.moveTo(ax, ay); ctx.lineTo(r.x + b.x, r.y + b.y);
+      }
+      ctx.stroke();
+      ctx.globalAlpha = al * 0.62;
+      ctx.lineWidth = 1.1 * k;
+      ctx.beginPath();
+      for (const pod of r.pods) {
+        if (pod.r < 2) continue;
+        ctx.moveTo(r.x + pod.x + pod.r, r.y + pod.y);
+        ctx.arc(r.x + pod.x, r.y + pod.y, pod.r, 0, 7);
+      }
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
   }
@@ -350,9 +352,12 @@ function draw(t) {
     if (d <= 0) continue;                           // both ends collapsed into blobs
     if (e.g && !P.ghosts) continue;
     const hot = e.s === hi || e.t === hi;
-    ctx.globalAlpha = (hot ? 0.85 : d * (e.g ? 0.16 : P.chords))
+    ctx.globalAlpha = (hot ? 0.9 : d * (e.g ? 0.16 : P.chords * (hoverNode ? 0.5 : 1)))
                     * Math.max(dim(a.R), dim(b.R));
-    ctx.strokeStyle = hot ? "#fff" : (e.g ? "#8f8fa8" : (e.b ? "#c39bf5" : "#9aa0b8"));
+    ctx.strokeStyle = hot ? "#fff"
+      : e.g ? "#8f8fa8"
+      : e.b ? "#c39bf5"
+      : "hsl(" + a.R.hue + ",42%,74%)";
     ctx.lineWidth = (hot ? 1.7 : 0.9) * k;
     if (e.g) ctx.setLineDash([2 * k, 5 * k]); else ctx.setLineDash([]);
     const cx = (a.R.x + b.R.x) / 2, cy = (a.R.y + b.R.y) / 2;
@@ -397,7 +402,7 @@ function draw(t) {
         ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, 7); ctx.fill();
         // a bead, not a dot: one offset highlight reads as a lit sphere and costs
         // one more arc, where a per-node gradient would cost 106 allocations a frame
-        ctx.fillStyle = "rgba(255,255,255,.26)";
+        ctx.fillStyle = "rgba(255,255,255,.20)";
         ctx.beginPath(); ctx.arc(n.x - rr * 0.3, n.y - rr * 0.34, rr * 0.44, 0, 7); ctx.fill();
         ctx.strokeStyle = "rgba(0,0,0,.32)"; ctx.lineWidth = 0.9 * k;
         ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, 7); ctx.stroke();
@@ -567,7 +572,7 @@ cv.addEventListener("pointermove", ev => {
     tip.style.left = Math.min(innerWidth - 350, ev.clientX + 14) + "px";
     tip.style.top = (ev.clientY + 16) + "px";
     tip.innerHTML = "<b>" + n.stem + "</b><br>" + n.short +
-      " &middot; ring " + n.hop + (n.anchor ? " (anchor)" : "") + "<br>" +
+      " &middot; " + n.type + (n.anchor ? " &middot; anchor" : "") + " &middot; " + n.hop + " hop" + (n.hop === 1 ? "" : "s") + " out<br>" +
       n.conn + " links, " + n.deg + " authored inbound" +
       (n.gold ? "<br>identity note" : "") +
       (n.dead ? "<br><span style='color:#8a8a96'>EXPIRED — history, not current</span>" : "") +
@@ -609,8 +614,7 @@ function toggle(key, name) {
   disp.appendChild(l); return b;
 }
 const gb = toggle("ghosts", "ghost chords");
-const rb2 = toggle("rings", "hop rings");
-const lt = toggle("lattice", "lattice");
+const lt = toggle("lattice", "pod track");
 const rl = toggle("realmLabels", "galaxy labels");
 const gl = toggle("glow", "field glow");
 const mo = toggle("motion", "drift");

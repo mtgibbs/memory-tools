@@ -583,7 +583,8 @@ def cmd_spheregrid(g: Graph, a) -> dict:
     discs placed on the plane by corridor distance from --center, so zoomed out
     the map reads as a graph of galaxies and zoomed in each one resolves into its
     own grid."""
-    SPACING = 21.0                    # world units between neighbouring notes
+    POD, POD_ARC, POD_STEP, POD_DIAM = 6, 42.0, 122.0, 118.0
+    TYPE_ORDER = ("user", "feedback", "project", "reference", "")
     GA = 2.399963229728653          # golden angle, same constant the forcemap uses
 
     def short(slug: str) -> str:
@@ -629,6 +630,26 @@ def cmd_spheregrid(g: Graph, a) -> dict:
             by_realm[realm].append(node)
     by_realm = {r: sorted(m) for r, m in by_realm.items() if m}
     hues = hue_map(list(by_realm))
+
+    # Frontmatter is read once here and handed to the node pass below — the
+    # layout needs `type` before positions exist, and the node pass needs the
+    # same bytes for its identity flag. Reading twice would double the only I/O
+    # this command does.
+    TYPE_VAL = re.compile(r"^\s*type:\s*([a-z]+)", re.M | re.I)
+    heads: dict[str, str] = {}
+    type_of: dict[str, str] = {}
+    for realm, members in by_realm.items():
+        for node in members:
+            stem = node.split("/")[-1]
+            try:
+                head = (g.vault / realm / "memory" / (stem + ".md")).read_text(
+                    encoding="utf-8", errors="replace")[:600]
+            except OSError:
+                head = ""
+            heads[node] = head
+            m = TYPE_VAL.search(head)
+            v = m.group(1).lower() if m else ""
+            type_of[node] = v if v in TYPE_ORDER else ""     # unknown types share the tail sector
 
     # ---- which galaxy is the centre --------------------------------------
     want = a.center
@@ -680,43 +701,77 @@ def cmd_spheregrid(g: Graph, a) -> dict:
         rim = max(hop.values(), default=0) + 1
         for m in members:
             hop.setdefault(m, rim)       # unreachable inside its own realm: the outer rim
-        rings: dict[int, list[str]] = defaultdict(list)
+        # FFX does not draw a cluster as a field of dots — it draws small rings of
+        # nodes, chained outward from a hub by visible track. That shape carries
+        # something a uniform disc cannot: the notes already declare a `type` in
+        # their frontmatter (45 feedback, 31 project, 19 reference, 4 user across
+        # this vault), so each type becomes its own chain of pods fanning off the
+        # anchor, and the make-up of a realm is legible before you read a label.
+        #
+        # Hop distance moves to the tooltip. It was a real signal, but it competed
+        # with type for the same axis and type is the one you can act on.
+        groups: dict[str, list[str]] = defaultdict(list)
         for m in members:
             hop_of[m] = hop[m]
-            rings[hop[m]].append(m)
-        # Concentric rings — one circle per hop — waste the disc whenever a band
-        # is thin. notes-from-hearing runs 1/6/4/1 across four hops, so its last
-        # lonely note sat at radius 100 and set the size of a disc whose other
-        # eleven notes were bunched inside radius 63. Every small realm rendered
-        # as a few dots marooned in a large empty circle.
-        #
-        # A Vogel spiral fixes the density instead of the radii: r = c*sqrt(i)
-        # with a golden-angle step packs every node at uniform spacing, so a
-        # disc's size tracks how many notes it holds rather than how many hops
-        # they happen to span. Order is still hop-major, so radius stays monotone
-        # in distance from the anchor and the hop boundaries are still real —
-        # they are recorded as they pass and drawn as rings by the template.
-        order: list[str] = []
-        for h in sorted(rings):
-            order.extend(sorted(rings[h], key=lambda m: (-len(g.undirected(m)), m)))
-        hop_r: list[float] = []
-        seen_hop: int | None = None
+            if m != anchor:
+                groups[type_of.get(m, "")].append(m)
+        pos[anchor] = (0.0, 0.0)
+        spiral_of[anchor] = 0
+
+        chains: list[tuple[str, list[list[str]]]] = []
+        for key in TYPE_ORDER:
+            ms = sorted(groups.get(key, []), key=lambda m: (-len(g.undirected(m)), m))
+            if ms:
+                chains.append((key, [ms[i:i + POD] for i in range(0, len(ms), POD)]))
+        total_pods = sum(len(c) for _, c in chains) or 1
+        # The first ring has to clear its neighbours, and how far out that is
+        # depends on how many groups share the circle. Fixed at 96 it left a
+        # five-note realm as three dots on the rim of an enormous empty disc.
+        POD_FIRST = max(58.0, 17.5 * len(chains))
+
+        pods: list[dict] = []
+        pod_links: list[list[int]] = []
         max_r = 0.0
-        for i, m in enumerate(order):
-            rad = SPACING * math.sqrt(i)
-            th = GA * i
-            pos[m] = (rad * math.cos(th), rad * math.sin(th))
-            max_r = max(max_r, rad)
-            spiral_of[m] = i
-            if hop_of[m] != seen_hop:
-                seen_hop = hop_of[m]
-                if rad > 6:
-                    hop_r.append(round(rad, 1))
+        cursor = 0.0
+        rank = 1
+        for key, chunks in chains:
+            width = 2 * math.pi * len(chunks) / total_pods
+            first_in_group = len(pods)
+            idx, row = 0, 0
+            while idx < len(chunks):
+                # Rows fill to CAPACITY, not to a fixed 1-2-3 fan. The fan put a
+                # two-pod group on rows 0 and 1 at the same bearing — one pod
+                # directly behind the other — which read as a spike shooting out
+                # of the hub and left the rest of the disc empty. How many pods
+                # fit is a question about arc length at this radius, so ask that.
+                dist = POD_FIRST + row * POD_STEP
+                cap = max(1, int(dist * width / POD_DIAM))
+                cnt = min(cap, len(chunks) - idx)
+                for j in range(cnt):
+                    th = cursor + width * (j + 0.5) / cnt
+                    cx, cy = dist * math.cos(th), dist * math.sin(th)
+                    pod = chunks[idx + j]
+                    pr = 0.0 if len(pod) == 1 else max(16.0, len(pod) * POD_ARC / (2 * math.pi))
+                    for q, m in enumerate(pod):
+                        ang = 2 * math.pi * q / len(pod) + th
+                        pos[m] = (cx + pr * math.cos(ang), cy + pr * math.sin(ang))
+                        spiral_of[m] = rank
+                        rank += 1
+                    k = len(pods)
+                    pods.append({"x": round(cx, 2), "y": round(cy, 2),
+                                 "r": round(pr, 2), "n": len(pod), "t": key or "other"})
+                    pod_links.append([-1, k] if k == first_in_group else [k - 1, k])
+                    max_r = max(max_r, dist + pr)
+                idx += cnt
+                row += 1
+            cursor += width
+        hop_r: list[float] = []
         realms_out.append({"name": realm, "short": short(realm),
                            "work": realm.startswith("work--"),
                            "n": len(members), "anchor": anchor.split("/")[-1],
-                           "hue": hues[realm], "rad": max_r + 14, "hopR": hop_r,
-                           "rings": max(rings) if rings else 0,
+                           "hue": hues[realm], "rad": max_r + 34, "hopR": hop_r,
+                           "pods": pods, "podLinks": pod_links,
+                           "rings": max(hop.values(), default=0),
                            "centre": realm == centre_realm,
                            "minor": len(members) < a.min_galaxy})
 
@@ -731,7 +786,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
     # the middle, scored on an ellipse so the cluster spreads to a screen's shape
     # instead of a circle. Discs cannot overlap by construction, which retires
     # the 400 x R^2 relaxation pass this used to need.
-    ASPECT, GAP = 1.7, 20.0
+    ASPECT, GAP = 1.7, 120.0
     placed: list[dict] = []
     for r in sorted(realms_out, key=lambda r: (-r["rad"], r["name"])):
         if not placed:
@@ -761,11 +816,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
         ox, oy = origin[realm]
         for node in members:
             stem = node.split("/")[-1]
-            path = g.vault / realm / "memory" / (stem + ".md")
-            try:
-                head = path.read_text(encoding="utf-8", errors="replace")[:600]
-            except OSError:
-                head = ""
+            head = heads[node]
             lx, ly = pos[node]
             index[node] = len(nodes)
             nodes.append({"stem": stem, "realm": realm, "short": short(realm),
@@ -774,6 +825,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                           "dead": node in g.status,
                           "chal": len(g.challenged.get(node, [])),
                           "hop": hop_of[node], "si": spiral_of[node],
+                          "type": type_of[node] or "other",
                           "deg": sum(1 for _, p in g.inn[node] if p == "authored"),
                           "conn": len(g.undirected(node)),
                           "x": round(ox + lx, 2), "y": round(oy + ly, 2)})

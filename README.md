@@ -217,9 +217,11 @@ memory-graph spheregrid --center pi-cluster    # centred somewhere else
 memory-graph spheregrid --min-galaxy 4         # under 4 notes renders as minor
 ```
 
-- **radius** is hops from that realm's anchor — the note with the most authored
-  inbound links from inside its own realm
-- within a hop, **angle** is set by a golden-angle spiral, most-connected first
+- the **anchor** sits at the hub — the note with the most authored inbound links
+  from inside its own realm
+- every other note joins a **pod**: a ring of up to six notes that all declare
+  the same `type` in frontmatter, chained outward from the hub by visible track
+- **hop distance** from the anchor survives as lightness, and in the tooltip
 
 Radius stays readable, and the output is byte-identical on every run over an
 unchanged corpus — so a place on the map can be pointed at twice. That is the
@@ -231,13 +233,22 @@ at the origin and ranked the rest by corridor distance, which made one arbitrary
 realm the subject of the whole map — pi-cluster sat in the middle because it was
 the biggest, which is not a reason. `--center` now only marks *where you are*.
 
-**Notes pack at constant density, not on fixed rings.** One circle per hop wastes
-the disc whenever a band is thin: `notes-from-hearing` runs 1/6/4/1 across four
-hops, so its last lonely note sat at radius 100 and set the size of a disc whose
-other eleven were bunched inside 63. Every small realm rendered as a few dots
-marooned in a large empty circle. A Vogel spiral (`r = c·√i`, golden-angle step)
-fixes spacing instead of radii, so a disc's size tracks how many notes it holds.
-Hop boundaries are still recorded as they pass, and still drawn as rings.
+**Position encodes type, not distance.** Hop distance was a real signal, but it
+competed with `type` for the same axis and type is the one you can act on: the
+notes already declare it (45 feedback, 31 project, 19 reference, 4 user across
+this vault), so the make-up of a realm is legible before you read a label. Pods
+of one type chain outward from the anchor, and rows fill to **capacity** rather
+than a fixed fan — a fan put a two-pod group at the same bearing on consecutive
+rows, one pod directly behind the other, which read as a spike shooting out of
+the hub while the rest of the disc stayed empty. How many pods fit is a question
+about arc length at a given radius, so that is what gets asked.
+
+**Three kinds of line, and they must not be confusable.** Steel and straight is
+**track** — pod rings and the spokes that chain them. It is structure, it carries
+no data, and it never lights up. A tinted curve is a **link**; a dotted one is
+inferred. Between realm discs, a lavender ribbon is a **corridor**. Hovering a
+note pushes track down and lifts its links, so the only lines that answer are
+real ones.
 
 Physics survives as animation only. Springs pull each node to its assigned slot;
 dragging displaces a node and letting go returns it. Nothing at run time can
@@ -278,12 +289,12 @@ dropped. The important ones get the room; the rest wait for zoom or hover.
 #### The art direction is load-bearing
 
 The reference is FFX's sphere grid, and its defining feature is that nodes sit
-**on visible track**. Our links are semantic — they say what relates to what,
-they do not describe the shape you are standing on. So the shape gets drawn too.
-In a phyllotaxis spiral the eye already reads arms at Fibonacci offsets; joining
-each note to `i-3`, `i-5` and `i-8` makes those arms explicit and the disc reads
-as a woven lattice instead of scattered beads. **It carries no data on purpose** —
-it is the board, and the chords are the moves.
+**on visible track** — small rings joined by line, not a field of dots. Our links
+are semantic: they say what relates to what, they do not describe the shape you
+are standing on. So the shape gets drawn too, and the generator computes it,
+because the generator is the thing that knows which `type` a note declared.
+**The track carries no data on purpose** — it is the board, and the chords are
+the moves.
 
 The rest, in order of how much it changed:
 
