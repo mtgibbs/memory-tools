@@ -421,6 +421,13 @@ renderers would drift, and the drift would be invisible until someone noticed th
 two views disagreed about the map. Layout is not reimplemented either: it is
 computed here and the plugin is a viewer.
 
+`tests/pane-hittest.py` covers the mapping that made this hard: the renderer
+originally sized itself from `innerWidth` and hit-tested with `ev.clientX`, which
+are the canvas's own box on a standalone page and wrong by the pane's origin
+anywhere else — so in Obsidian nothing was clickable and only panning worked. The
+test puts the canvas at an offset in a differently-sized box and clicks the exact
+centre of eight nodes.
+
 The plugin is the answer to "should we build our own notes app". The thing worth
 having is Obsidian with a different graph view, and building it standalone means
 rebuilding editing, search, backlinks, file watching, conflict handling, sync and

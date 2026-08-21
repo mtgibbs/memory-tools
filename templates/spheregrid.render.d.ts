@@ -40,6 +40,12 @@ export interface SphereGridHandle {
   flyOut(): void;
   setFocus(realm: SphereGridRealm | null): void;
   save(): void;
+  /** put every node on its assigned slot, skipping the assembly animation */
+  settleNow(): void;
+  /** world -> canvas-local pixels */
+  screenOf(n: { x: number; y: number }): { x: number; y: number };
+  /** canvas-local pixels -> world */
+  worldOf(cx: number, cy: number): { x: number; y: number };
   destroy(): void;
 }
 

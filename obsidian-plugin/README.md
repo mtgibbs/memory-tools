@@ -55,6 +55,25 @@ it is desktop only — `manifest.json` says so.
 | **Also merge work vault** | passed through as `--also-work` |
 | **Centre** | which realm is marked *you are here* |
 
+## The bug this shipped with, and the test that now covers it
+
+The first build rendered fine in Obsidian and nothing was clickable — you could
+pan, and every click landed somewhere else. The renderer sized itself from
+`innerWidth` and hit-tested with `ev.clientX`, which are the same as the canvas's
+own box on a standalone page and wrong by the pane's origin anywhere else. It
+now measures `getBoundingClientRect()` and converts pointer coordinates into
+canvas-local space, and watches its own box with a `ResizeObserver`, because a
+pane can resize while the window does not.
+
+`tests/pane-hittest.py` puts the canvas at a deliberate offset in a box a
+different size from the window, then clicks the exact centre of eight nodes and
+one patch of empty space:
+
+```bash
+memory-graph spheregrid --data ~/.claude/projects/spheregrid.json
+python3 tests/pane-hittest.py
+```
+
 ## Known edges
 
 - **Work notes cannot be opened from here.** A merged work vault is read from a

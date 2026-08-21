@@ -119,7 +119,7 @@ const SIDES = (() => {
 // ---- camera ---------------------------------------------------------------
 const cv = opts.canvas, ctx = cv.getContext("2d");
 const tip = opts.tooltip || null;
-let scale = 1, tx = 0, ty = 0, dpr = 1;
+let scale = 1, tx = 0, ty = 0, dpr = 1, vw = 1, vh = 1;
 let tgtS = null, tgtX = 0, tgtY = 0;
 let baseS = 1, baseX = 0, baseY = 0;
 
@@ -131,13 +131,20 @@ function bounds() {
   }
   return [x0, y0, x1, y1];
 }
+// The canvas's own box, never the window's. Read fresh on pointer events
+// because a pane can move without resizing — dragging a split, collapsing the
+// sidebar — and a cached rect would silently go stale.
+function box() { return cv.getBoundingClientRect(); }
 function measure() {
   dpr = Math.min(1.5, window.devicePixelRatio || 1);
-  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+  const r = box();
+  vw = Math.max(1, Math.round(r.width));
+  vh = Math.max(1, Math.round(r.height));
+  cv.width = vw * dpr; cv.height = vh * dpr;
   const [x0, y0, x1, y1] = bounds();
-  baseS = Math.min(innerWidth / (x1 - x0 + 120), innerHeight / (y1 - y0 + 120));
-  baseX = innerWidth / 2 - (x0 + x1) / 2 * baseS;
-  baseY = innerHeight / 2 - (y0 + y1) / 2 * baseS;
+  baseS = Math.min(vw / (x1 - x0 + 120), vh / (y1 - y0 + 120));
+  baseX = vw / 2 - (x0 + x1) / 2 * baseS;
+  baseY = vh / 2 - (y0 + y1) / 2 * baseS;
   return baseS > 0 && isFinite(baseS);
 }
 // A window that reports zero width at script time — a background tab, an iframe
@@ -159,12 +166,15 @@ const onResize = () => {
   if (!had) fit();                                  // first real layout: adopt it
 };
 addEventListener("resize", onResize);
+// A pane can resize while the window does not — split dragged, sidebar toggled.
+const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) : null;
+if (ro) ro.observe(cv);
 function flyTo(r, pad) {
   // the old 2.2 ceiling meant a twelve-note galaxy still sat small in the frame
   // after you asked to go into it, which is most of why zoom felt inert
-  tgtS = Math.min(7, Math.min(innerWidth, innerHeight) / (r.rad * 2 + (pad || 220)));
-  tgtX = innerWidth / 2 - r.x * tgtS;
-  tgtY = innerHeight / 2 - r.y * tgtS;
+  tgtS = Math.min(7, Math.min(vw, vh) / (r.rad * 2 + (pad || 220)));
+  tgtX = vw / 2 - r.x * tgtS;
+  tgtY = vh / 2 - r.y * tgtS;
 }
 function flyOut() { tgtS = baseS; tgtX = baseX; tgtY = baseY; }
 
@@ -217,7 +227,7 @@ function draw(t) {
     if (Math.abs(tgtS - scale) / tgtS < 0.002) { scale = tgtS; tx = tgtX; ty = tgtY; tgtS = null; }
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = VOID; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  ctx.fillStyle = VOID; ctx.fillRect(0, 0, vw, vh);
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
   const k = 1 / scale;                              // keep strokes screen-constant
 
@@ -225,7 +235,7 @@ function draw(t) {
   // at 35 realms most of the map leaves the viewport the moment you zoom in, and
   // all of it was being drawn anyway.
   const vx0 = -tx * k, vy0 = -ty * k;
-  const vx1 = (innerWidth - tx) * k, vy1 = (innerHeight - ty) * k;
+  const vx1 = (vw - tx) * k, vy1 = (vh - ty) * k;
   const onScreen = (x, y, pad) =>
     x + pad > vx0 && x - pad < vx1 && y + pad > vy0 && y - pad < vy1;
   for (const r of R) r.vis = onScreen(r.x, r.y, r.rad + 40 * k);
@@ -513,11 +523,11 @@ function draw(t) {
   // vignette last, in screen space — pulls the eye to the middle and stops the
   // starfield from fighting the chrome at the corners
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  if (!VIG.c || VIG.w !== innerWidth || VIG.h !== innerHeight) {
-    VIG.w = innerWidth; VIG.h = innerHeight;
+  if (!VIG.c || VIG.w !== vw || VIG.h !== vh) {
+    VIG.w = vw; VIG.h = vh;
     VIG.c = document.createElement("canvas");
-    VIG.c.width = Math.max(1, Math.ceil(innerWidth / 4));
-    VIG.c.height = Math.max(1, Math.ceil(innerHeight / 4));
+    VIG.c.width = Math.max(1, Math.ceil(vw / 4));
+    VIG.c.height = Math.max(1, Math.ceil(vh / 4));
     const vc = VIG.c.getContext("2d"), W = VIG.c.width, H = VIG.c.height;
     const vg = vc.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32,
                                        W / 2, H / 2, Math.max(W, H) * 0.78);
@@ -525,7 +535,7 @@ function draw(t) {
     vg.addColorStop(1, "rgba(5,6,10,.80)");
     vc.fillStyle = vg; vc.fillRect(0, 0, W, H);
   }
-  ctx.drawImage(VIG.c, 0, 0, innerWidth, innerHeight);
+  ctx.drawImage(VIG.c, 0, 0, vw, vh);
 
   requestAnimationFrame(draw);
 }
@@ -545,7 +555,10 @@ function setFocus(r) {
 }
 const onKey = ev => { if (ev.key === "Escape") setFocus(null); };
 addEventListener("keydown", onKey);
-const world = ev => [(ev.clientX - tx) / scale, (ev.clientY - ty) / scale];
+const lx = ev => ev.clientX - box().left;
+const ly = ev => ev.clientY - box().top;
+const world = ev => { const r = box();
+  return [(ev.clientX - r.left - tx) / scale, (ev.clientY - r.top - ty) / scale]; };
 function pick(ev) {
   const [wx, wy] = world(ev);
   let bn = null, bd = 1e9, br = null, brd = 1e9;
@@ -565,19 +578,21 @@ function pick(ev) {
   return [bn, br];
 }
 cv.addEventListener("pointerdown", ev => {
-  cv.setPointerCapture(ev.pointerId); cv.classList.add("grabbing");
-  moved = 0; px = ev.clientX; py = ev.clientY;
+  try { cv.setPointerCapture(ev.pointerId); } catch (e) {}
+  cv.classList.add("grabbing");
+  moved = 0; px = lx(ev); py = ly(ev);
   dragNode = pick(ev)[0];
   panning = !dragNode;
   tgtS = null;
 });
 cv.addEventListener("pointermove", ev => {
-  moved += Math.abs(ev.clientX - px) + Math.abs(ev.clientY - py);
+  const cx = lx(ev), cy = ly(ev);
+  moved += Math.abs(cx - px) + Math.abs(cy - py);
   if (dragNode) {
     const [wx, wy] = world(ev);
     dragNode.x = wx; dragNode.y = wy; dragNode.vx = 0; dragNode.vy = 0;
-  } else if (panning) { tx += ev.clientX - px; ty += ev.clientY - py; }
-  px = ev.clientX; py = ev.clientY;
+  } else if (panning) { tx += cx - px; ty += cy - py; }
+  px = cx; py = cy;
   if (!dragNode && !panning) {
     const [n, r] = pick(ev);
     hoverNode = n; hoverRealm = n ? n.R : r;
@@ -585,8 +600,8 @@ cv.addEventListener("pointermove", ev => {
   if (hoverNode && !panning && tip) {
     const n = hoverNode;
     tip.style.display = "block";
-    tip.style.left = Math.min(innerWidth - 350, ev.clientX + 14) + "px";
-    tip.style.top = (ev.clientY + 16) + "px";
+    tip.style.left = Math.min(vw - 350, lx(ev) + 14) + "px";
+    tip.style.top = (ly(ev) + 16) + "px";
     tip.innerHTML = "<b>" + n.stem + "</b><br>" + n.short +
       " &middot; " + n.type + (n.anchor ? " &middot; anchor" : "") + " &middot; " + n.hop + " hop" + (n.hop === 1 ? "" : "s") + " out<br>" +
       n.conn + " links, " + n.deg + " authored inbound" +
@@ -612,7 +627,7 @@ cv.addEventListener("wheel", ev => {
   const f = Math.exp(-ev.deltaY * 0.0016);
   const [wx, wy] = world(ev);
   scale = Math.max(baseS * 0.35, Math.min(6, scale * f));
-  tx = ev.clientX - wx * scale; ty = ev.clientY - wy * scale;
+  tx = lx(ev) - wx * scale; ty = ly(ev) - wy * scale;
 }, { passive: false });
 cv.addEventListener("dblclick", () => setFocus(null));
 
@@ -620,10 +635,23 @@ requestAnimationFrame(draw);
 
 return {
   P, N, E, R, flyTo, flyOut, setFocus, save,
+  // world <-> canvas-local, exposed because it is the mapping that broke when
+  // this renderer was first embedded in a pane, and a mapping you cannot read
+  // is a mapping you cannot test
+  /** Put every node on its assigned slot immediately, skipping the assembly
+   *  animation. The slot is the map's actual claim; the flight to it is
+   *  decoration, and anything that needs positions to be true right now — a
+   *  test, a screenshot, a "reset layout" — should not have to wait for it. */
+  settleNow() {
+    for (const n of N) { n.x = n.hx; n.y = n.hy; n.vx = 0; n.vy = 0; }
+  },
+  screenOf: n => ({ x: n.x * scale + tx, y: n.y * scale + ty }),
+  worldOf: (cx, cy) => ({ x: (cx - tx) / scale, y: (cy - ty) / scale }),
   get focusRealm() { return focusRealm; },
   destroy() {
     stopped = true;
     removeEventListener("resize", onResize);
+    if (ro) ro.disconnect();
     removeEventListener("keydown", onKey);
   },
 };
