@@ -30,6 +30,7 @@ Reading a note shows what it points *at*. It cannot show what points *at it* wit
 scanning every file. That is the expensive direction, so this is what it precomputes.
 
 ```bash
+memory-graph where                                  # which realm is this directory
 memory-graph neighbors project_local_coding_agent   # in and out, one call
 memory-graph path note-a note-b                     # how two notes connect, if at all
 memory-graph keystones                              # most linked-to notes
@@ -44,6 +45,39 @@ Add `--json` to any subcommand.
 Notes are keyed `<folder>/<name>`, not by filename. Thirteen folders each hold a
 `MEMORY.md`; treating those as one node invents a fake 2-hop path between every pair
 of folders.
+
+#### `where` — the entry point
+
+A session opens in a directory and has no idea the rest of the vault exists.
+
+```
+$ memory-graph where --path ~/dev/pi-cluster
+-Users-mtgibbs-dev-pi-cluster
+  59 notes · 1 invalidated · about: project_local_coding_agent
+  start here
+     18 in   project_local_coding_agent
+     10 in   feedback_agent_safety_pr_gated
+  borders
+      6 authored ( 8 total)  -Users-mtgibbs-dev-rethink-memory-and-visualization
+      0 authored ( 3 total)  -Users-mtgibbs-ai-research
+```
+
+The obvious alternative is a master router at the vault root listing every realm,
+and it is the wrong shape: **a router you load has to stay small.** At a few
+hundred realms that document is ~25KB of index spent every session to answer a
+question that needs three entries. A router you *query* has no size limit, so
+this returns only the realm you are in and what borders it.
+
+Entry points rank on **authored** inbound only, the same rule `keystones` uses.
+An agent asking "where do I start reading" must not be handed the note that
+merely shares the most vocabulary.
+
+The realm slug is the absolute path with separators **and dots** collapsed to
+dashes. The dot rule is not a guess — the vault holds
+`…-mtgibbs-xyz--claude-worktrees-feat-…`, and only dot-collapsing produces that
+doubled dash. Separator-only mapping silently misses every worktree checkout,
+which is exactly where a session tends to be sitting when it asks. A worktree
+with no notes of its own reports the realm it was cut from.
 
 ### `memory-infer` — grow the links
 
