@@ -93,9 +93,16 @@ def parse_challenges(body: str) -> list[dict]:
 
 
 class Graph:
-    def __init__(self, vault: Path):
+    def __init__(self, vault: Path, also: list[tuple[Path, str]] | None = None):
         self.vault = vault
+        # Extra roots load as (path, prefix). The work/personal split was always
+        # in here — boundary edges, the corridor lock, `work--` realm names — but
+        # nothing populated it, because work memory lives in its own vault rather
+        # than as prefixed realms inside this one. This is how the two meet
+        # without either being copied into the other.
+        self.also = also or []
         self.realm: dict[str, str] = {}
+        self.path: dict[str, Path] = {}
         self.out: dict[str, list[tuple[str, str]]] = defaultdict(list)
         self.inn: dict[str, list[tuple[str, str]]] = defaultdict(list)
         self._load()
@@ -106,16 +113,21 @@ class Graph:
         # between every pair of realms through a file that does not exist.
         # Obsidian keeps them as distinct nodes too — only link *resolution* is
         # ambiguous there, which is what by_stem below models.
-        paths = sorted(self.vault.glob("*/memory/*.md"))
+        roots = [(self.vault, "")] + list(self.also)
+        paths: list[tuple[Path, str]] = []
+        for root, prefix in roots:
+            paths += [(p, prefix) for p in sorted(root.glob("*/memory/*.md"))]
         self.by_stem: dict[str, list[str]] = defaultdict(list)
-        for p in paths:
-            node = f"{p.parts[-3]}/{p.stem}"
-            self.realm[node] = p.parts[-3]
+        for p, prefix in paths:
+            realm = prefix + p.parts[-3]
+            node = f"{realm}/{p.stem}"
+            self.realm[node] = realm
+            self.path[node] = p
             self.by_stem[p.stem].append(node)
         self.status: dict[str, str] = {}
         self.challenged: dict[str, list[dict]] = {}
-        for p in paths:
-            src = f"{p.parts[-3]}/{p.stem}"
+        for p, prefix in paths:
+            src = f"{prefix}{p.parts[-3]}/{p.stem}"
             text = p.read_text(encoding="utf-8", errors="replace")
             sm = INVALID.search(text[:600])
             if sm:
@@ -591,6 +603,10 @@ def cmd_where(g: Graph, a) -> dict:
     on_disk = {p.name for p in g.vault.iterdir() if p.is_dir()} if g.vault.is_dir() else set()
 
     realm, parent = None, None
+    # a merged work vault carries a `work--` prefix its directory does not, so a
+    # session sitting in a work repo has to be looked up under both names
+    if slug not in live and "work--" + slug in live:
+        slug = "work--" + slug
     if slug in live:
         realm = slug
     else:
@@ -727,10 +743,8 @@ def cmd_spheregrid(g: Graph, a) -> dict:
     type_of: dict[str, str] = {}
     for realm, members in by_realm.items():
         for node in members:
-            stem = node.split("/")[-1]
             try:
-                head = (g.vault / realm / "memory" / (stem + ".md")).read_text(
-                    encoding="utf-8", errors="replace")[:600]
+                head = g.path[node].read_text(encoding="utf-8", errors="replace")[:600]
             except OSError:
                 head = ""
             heads[node] = head
@@ -874,6 +888,12 @@ def cmd_spheregrid(g: Graph, a) -> dict:
     # instead of a circle. Discs cannot overlap by construction, which retires
     # the 400 x R^2 relaxation pass this used to need.
     ASPECT, GAP = 1.7, 120.0
+    # Work and personal get their own hemisphere when both are present. The lock
+    # on a crossing corridor only means something if there is a line to cross;
+    # interleaved, the glyph marks a boundary the layout does not have. Packing
+    # still runs largest-first into the nearest free spot — a realm on the wrong
+    # side just pays for the distance.
+    mixed = any(r["work"] for r in realms_out) and any(not r["work"] for r in realms_out)
     placed: list[dict] = []
     for r in sorted(realms_out, key=lambda r: (-r["rad"], r["name"])):
         if not placed:
@@ -890,6 +910,8 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                        for q in placed):
                     continue
                 score = math.hypot(x / ASPECT, y)
+                if mixed and x * (1 if r["work"] else -1) < 0:
+                    score += abs(x) * 2.2          # wrong hemisphere, and it shows
                 if best is None or score < best[0]:
                     best = (score, x, y)
         r["x"], r["y"] = (best[1], best[2]) if best else (0.0, 0.0)
@@ -1086,6 +1108,9 @@ def render(cmd: str, data: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--vault", default=str(Path.home() / ".claude/projects"))
+    ap.add_argument("--also-work", metavar="DIR", default=None,
+                    help="merge a second vault whose realms are marked work-- "
+                         "(e.g. ~/work-memories/projects)")
     ap.add_argument("--json", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -1112,7 +1137,8 @@ def main() -> int:
 
     a = ap.parse_args()
     a.cmd = a.cmd.replace("-", "_")
-    g = Graph(Path(a.vault).expanduser())
+    extra = [(Path(a.also_work).expanduser(), "work--")] if a.also_work else []
+    g = Graph(Path(a.vault).expanduser(), extra)
     data = {"neighbors": cmd_neighbors, "path": cmd_path, "keystones": cmd_keystones,
             "orphans": cmd_orphans, "realms": cmd_realms, "brief": cmd_brief,
             "canvas": cmd_canvas, "forcemap": cmd_forcemap, "spheregrid": cmd_spheregrid,

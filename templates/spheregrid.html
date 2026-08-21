@@ -14,12 +14,12 @@ html,body{margin:0;height:100%;background:#05060a;overflow:hidden;
 #hud .t{font:600 13px var(--ui);color:#f0efe8;letter-spacing:.16em;text-transform:uppercase}
 #hud .s{color:#6f6f7e;margin-top:2px}
 #hud .s em{color:#ff7a33;font-style:normal}
-#legend{position:fixed;left:14px;bottom:12px;color:#83838f;background:rgba(5,6,10,.82);backdrop-filter:blur(7px);font:11px var(--ui);
+#legend{position:fixed;left:14px;bottom:12px;color:#83838f;background:rgba(9,10,16,.94);font:11px var(--ui);
  padding:9px 11px;border-radius:6px;line-height:1.8;z-index:2;border:1px solid #1d1d25}
 .sw{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:-1px}
 #panels{position:fixed;right:12px;top:12px;z-index:2;display:flex;flex-direction:column;
  gap:8px;align-items:flex-end}
-#panels details{color:#b0b0bc;background:rgba(5,6,10,.9);backdrop-filter:blur(7px);padding:8px 12px;border-radius:6px;
+#panels details{color:#b0b0bc;background:rgba(9,10,16,.94);padding:8px 12px;border-radius:6px;
  user-select:none;border:1px solid #1d1d25;min-width:196px}
 #panels summary{cursor:pointer;color:#dcdce4;font-weight:600;margin-bottom:5px}
 #panels label{display:flex;align-items:center;gap:8px;margin:5px 0;white-space:nowrap}
@@ -66,6 +66,7 @@ if (AMBIENT) {
 const N = DATA.nodes, E = DATA.edges, R = DATA.realms, CORR = DATA.corridors;
 const GOLD = "#ffd54a", ASH = "#5c5c66", CHAL = "#ff5d3d", ACCENT = "#ff7a33";
 const VOID = "#05060a";
+const VIG = { c: null, w: 0, h: 0 };
 
 // Deterministic starfield. Flat black reads as "nothing here"; a field with
 // depth reads as space with things in it, which is the difference between a
@@ -78,7 +79,7 @@ const STARS = (() => {
   const r = rng(0x5EED), out = [];
   for (let i = 0; i < 900; i++)
     out.push({ x: (r() - 0.5) * 3400, y: (r() - 0.5) * 2400,
-               s: 0.35 + r() * 1.05, a: 0.06 + r() * 0.5, tw: r() * 6.28 });
+               s: 0.35 + r() * 1.05, tier: i % 8 });
   return out;
 })();
 
@@ -132,6 +133,7 @@ E.forEach(e => { N[e.s].adj.add(e.t); N[e.t].adj.add(e.s); });
 // because it is the thing that knows which type a note declared.
 
 R.forEach(r => { if (r.centre) r.hue = 24; });   // the accent is reserved for home
+R.forEach(r => { r.chord = "hsl(" + r.hue + ",42%,74%)"; });   // built once, not per edge per frame
 
 // Lightness carries depth: notes near the anchor read brighter than the rim, so
 // "how far from what this realm is about" survives even though POSITION now
@@ -149,6 +151,17 @@ N.forEach(n => {
   n.glow = n.gold ? "hsl(44,92%,52%)" : "hsl(" + n.R.hue + ",88%,52%)";
 });
 
+// hemisphere captions, only when the map actually has two hemispheres
+const SIDES = (() => {
+  const w = R.filter(r => r.work), p = R.filter(r => !r.work);
+  if (!w.length || !p.length) return null;
+  const mid = g => {
+    const y0 = Math.min(...g.map(r => r.y - r.rad));
+    return { x: g.reduce((s, r) => s + r.x, 0) / g.length, y: y0 - 34 };
+  };
+  return [{ ...mid(p), label: "PERSONAL" }, { ...mid(w), label: "WORK" }];
+})();
+
 // ---- camera ---------------------------------------------------------------
 const cv = document.getElementById("c"), ctx = cv.getContext("2d");
 const tip = document.getElementById("tip");
@@ -165,7 +178,7 @@ function bounds() {
   return [x0, y0, x1, y1];
 }
 function measure() {
-  dpr = window.devicePixelRatio || 1;
+  dpr = Math.min(1.5, window.devicePixelRatio || 1);
   cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
   const [x0, y0, x1, y1] = bounds();
   baseS = Math.min(innerWidth / (x1 - x0 + 120), innerHeight / (y1 - y0 + 120));
@@ -253,11 +266,29 @@ function draw(t) {
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
   const k = 1 / scale;                              // keep strokes screen-constant
 
+  // What is on screen, in world units. Everything below asks before it draws:
+  // at 35 realms most of the map leaves the viewport the moment you zoom in, and
+  // all of it was being drawn anyway.
+  const vx0 = -tx * k, vy0 = -ty * k;
+  const vx1 = (innerWidth - tx) * k, vy1 = (innerHeight - ty) * k;
+  const onScreen = (x, y, pad) =>
+    x + pad > vx0 && x - pad < vx1 && y + pad > vy0 && y - pad < vy1;
+  for (const r of R) r.vis = onScreen(r.x, r.y, r.rad + 40 * k);
+
+  // 900 stars cost 900 beginPath + 900 arc + 900 fill — a quarter of every
+  // frame's draw calls, spent on the backdrop. Eight alpha tiers, one path each,
+  // and the twinkle moves the tier instead of the star.
   ctx.fillStyle = "#dfe6ff";
-  for (const s of STARS) {                          // parallax comes free from world space
-    ctx.globalAlpha = s.a * (0.62 + 0.38 * Math.sin(t * 0.0004 + s.tw));
-    const rr = s.s * k;
-    ctx.beginPath(); ctx.arc(s.x, s.y, rr, 0, 7); ctx.fill();
+  for (let tier = 0; tier < 8; tier++) {
+    ctx.globalAlpha = (0.05 + tier * 0.055) * (0.68 + 0.32 * Math.sin(t * 0.0005 + tier));
+    ctx.beginPath();
+    for (const s of STARS) {
+      if (s.tier !== tier || !onScreen(s.x, s.y, 2 * k)) continue;
+      const rr = s.s * k;
+      ctx.moveTo(s.x + rr, s.y);
+      ctx.arc(s.x, s.y, rr, 0, 7);
+    }
+    ctx.fill();
   }
   ctx.globalAlpha = 1;
 
@@ -283,12 +314,17 @@ function draw(t) {
   for (const r of R) {
     const d = detail(r);
     r.d = d;
+    if (!r.vis) continue;
     ctx.globalAlpha = dim(r);
     if (P.glow) {                                   // the field: a soft well per galaxy
-      const g = ctx.createRadialGradient(r.x, r.y, r.rad * 0.15, r.x, r.y, r.rad * 1.25);
-      g.addColorStop(0, "hsla(" + r.hue + ",75%,52%," + (0.085 - d * 0.035).toFixed(3) + ")");
-      g.addColorStop(1, "hsla(" + r.hue + ",70%,60%,0)");
-      ctx.fillStyle = g;
+      // geometry is fixed in world space, so this is built once per realm for
+      // the life of the page instead of 35 times a frame
+      if (!r._well) {
+        r._well = ctx.createRadialGradient(r.x, r.y, r.rad * 0.15, r.x, r.y, r.rad * 1.25);
+        r._well.addColorStop(0, "hsla(" + r.hue + ",75%,52%,.07)");
+        r._well.addColorStop(1, "hsla(" + r.hue + ",70%,60%,0)");
+      }
+      ctx.fillStyle = r._well;
       ctx.beginPath(); ctx.arc(r.x, r.y, r.rad * 1.25, 0, 7); ctx.fill();
     }
     if (d > 0) {                                    // rim of the disc
@@ -298,7 +334,7 @@ function draw(t) {
       ctx.strokeStyle = "hsla(" + r.hue + ",50%,60%,.30)";
       ctx.lineWidth = 0.9 * k;
       ctx.beginPath(); ctx.arc(r.x, r.y, r.rad, 0, 7); ctx.stroke();
-      const ticks = r.minor ? 12 : 36;
+      const ticks = r.rad * scale < 70 ? 0 : r.minor ? 12 : 36;
       ctx.strokeStyle = "hsla(" + r.hue + ",55%,68%,.34)";
       ctx.lineWidth = 0.9 * k;
       ctx.beginPath();
@@ -317,7 +353,7 @@ function draw(t) {
   // the board, under the moves
   if (P.lattice) {
     for (const r of R) {
-      if (r.d <= 0 || !r.pods) continue;
+      if (r.d <= 0 || !r.pods || !r.vis) continue;
       const al = r.d * dim(r) * (hoverNode ? 0.4 : 1);
       ctx.strokeStyle = "#7d8496";                    // steel: structure, never data
       // spokes first, so a pod ring sits on top of the line that feeds it
@@ -349,7 +385,7 @@ function draw(t) {
   for (const e of E) {
     const a = N[e.s], b = N[e.t];
     const d = Math.min(a.R.d, b.R.d);
-    if (d <= 0) continue;                           // both ends collapsed into blobs
+    if (d <= 0 || (!a.R.vis && !b.R.vis)) continue;
     if (e.g && !P.ghosts) continue;
     const hot = e.s === hi || e.t === hi;
     ctx.globalAlpha = (hot ? 0.9 : d * (e.g ? 0.16 : P.chords * (hoverNode ? 0.5 : 1)))
@@ -357,7 +393,7 @@ function draw(t) {
     ctx.strokeStyle = hot ? "#fff"
       : e.g ? "#8f8fa8"
       : e.b ? "#c39bf5"
-      : "hsl(" + a.R.hue + ",42%,74%)";
+      : a.R.chord;
     ctx.lineWidth = (hot ? 1.7 : 0.9) * k;
     if (e.g) ctx.setLineDash([2 * k, 5 * k]); else ctx.setLineDash([]);
     const cx = (a.R.x + b.R.x) / 2, cy = (a.R.y + b.R.y) / 2;
@@ -371,6 +407,7 @@ function draw(t) {
 
   // nodes, or the blob that stands in for them
   for (const r of R) {
+    if (!r.vis) { r.blobR = 0; continue; }
     if (r.d < 1) {                                  // zoomed out: one body per galaxy
       // screen-constant so a galaxy stays readable at any zoom, but modest:
       // a blob that grows in world units drags the whole fit out with it
@@ -394,18 +431,23 @@ function draw(t) {
         ctx.strokeStyle = ASH; ctx.lineWidth = 1.2 * k;
         ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, 7); ctx.stroke();
       } else {
-        if (P.glow) {                               // it emits before it exists
+        const px = rr * scale;                    // how big this bead actually is
+        if (P.glow && px > 2.2) {                   // it emits before it exists
           const G = rr * (n.anchor ? 3.6 : 2.7);
           ctx.drawImage(glowSprite(n.glow), n.x - G, n.y - G, G * 2, G * 2);
         }
         ctx.fillStyle = n.fill;
         ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, 7); ctx.fill();
         // a bead, not a dot: one offset highlight reads as a lit sphere and costs
-        // one more arc, where a per-node gradient would cost 106 allocations a frame
-        ctx.fillStyle = "rgba(255,255,255,.20)";
-        ctx.beginPath(); ctx.arc(n.x - rr * 0.3, n.y - rr * 0.34, rr * 0.44, 0, 7); ctx.fill();
-        ctx.strokeStyle = "rgba(0,0,0,.32)"; ctx.lineWidth = 0.9 * k;
-        ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, 7); ctx.stroke();
+        // one more arc, where a per-node gradient would allocate once per node a
+        // frame. Below ~4px neither the highlight nor the rim is visible at all,
+        // so both are skipped rather than drawn into a single pixel.
+        if (px > 4) {
+          ctx.fillStyle = "rgba(255,255,255,.20)";
+          ctx.beginPath(); ctx.arc(n.x - rr * 0.3, n.y - rr * 0.34, rr * 0.44, 0, 7); ctx.fill();
+          ctx.strokeStyle = "rgba(0,0,0,.32)"; ctx.lineWidth = 0.9 * k;
+          ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, 7); ctx.stroke();
+        }
       }
       if (n.gold && !n.dead) {                      // identity: a ring, not a repaint
         ctx.strokeStyle = GOLD; ctx.lineWidth = 1.4 * k;
@@ -448,6 +490,7 @@ function draw(t) {
   };
   for (const r of R) {
     if (!P.realmLabels) break;
+    if (!r.vis) continue;
     // a one-note realm names itself twice — its realm label and its only note's
     // label say nearly the same thing on top of each other. The note wins.
     if (r.n === 1 && r !== hoverRealm) continue;
@@ -478,7 +521,7 @@ function draw(t) {
   ctx.font = (10.5 / scale) + "px var(--mono), monospace";
   const cand = [];
   for (const r of R) {
-    if (r.d <= 0) continue;
+    if (r.d <= 0 || !r.vis) continue;
     for (const n of r.members) {
       const near = hoverNode && (n === hoverNode || hoverNode.adj.has(n.i));
       const show = tier === "all" || near || n.anchor || r === focusRealm ||
@@ -501,16 +544,33 @@ function draw(t) {
     label(n.stem, x, y);
   }
   ctx.globalAlpha = 1;
+  if (SIDES) {                                      // the split, said out loud
+    ctx.textAlign = "center";
+    ctx.font = "600 " + 26 * k + "px var(--ui), sans-serif";
+    ctx.letterSpacing = (5 * k) + "px";
+    for (const s of SIDES) {
+      ctx.fillStyle = "rgba(154,160,184,.24)";
+      ctx.fillText(s.label, s.x, s.y);
+    }
+    ctx.letterSpacing = "0px";
+  }
+
   // vignette last, in screen space — pulls the eye to the middle and stops the
   // starfield from fighting the chrome at the corners
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const vg = ctx.createRadialGradient(
-    innerWidth / 2, innerHeight / 2, Math.min(innerWidth, innerHeight) * 0.32,
-    innerWidth / 2, innerHeight / 2, Math.max(innerWidth, innerHeight) * 0.78);
-  vg.addColorStop(0, "rgba(5,6,10,0)");
-  vg.addColorStop(1, "rgba(5,6,10,.80)");
-  ctx.fillStyle = vg;
-  ctx.fillRect(0, 0, innerWidth, innerHeight);
+  if (!VIG.c || VIG.w !== innerWidth || VIG.h !== innerHeight) {
+    VIG.w = innerWidth; VIG.h = innerHeight;
+    VIG.c = document.createElement("canvas");
+    VIG.c.width = Math.max(1, Math.ceil(innerWidth / 4));
+    VIG.c.height = Math.max(1, Math.ceil(innerHeight / 4));
+    const vc = VIG.c.getContext("2d"), W = VIG.c.width, H = VIG.c.height;
+    const vg = vc.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32,
+                                       W / 2, H / 2, Math.max(W, H) * 0.78);
+    vg.addColorStop(0, "rgba(5,6,10,0)");
+    vg.addColorStop(1, "rgba(5,6,10,.80)");
+    vc.fillStyle = vg; vc.fillRect(0, 0, W, H);
+  }
+  ctx.drawImage(VIG.c, 0, 0, innerWidth, innerHeight);
 
   requestAnimationFrame(draw);
 }
