@@ -372,4 +372,36 @@ not have. Packing is still largest-first into the nearest free spot — a realm 
 the wrong side just pays for the distance, so the split is a strong preference
 rather than a wall.
 
+#### What actually made it slow
+
+Merged, the map is 366 notes and it lagged. Measured before touching anything:
+**avg 11.4 ms, p95 56 ms, 11,309 canvas calls a frame.**
+
+Cutting calls to 6,950 (39% off) barely moved the average and did nothing for
+the spikes — **it was never call-bound.** What it is:
+
+- **`backdrop-filter: blur()` on the panels.** A canvas repainting at 60fps
+  underneath forces the browser to re-blur those regions every frame. Deleted.
+  This one is invisible to a profiler that hides the chrome before measuring,
+  which is exactly what mine did — it was found by reasoning about what the
+  measurement could not see.
+- **Fillrate, not draw calls.** At `devicePixelRatio` 2 the backing store is
+  3200×2000 = 6.4M pixels, and the background *and* the vignette each covered
+  all of it every frame. The backing store is capped at 1.5 (44% fewer pixels,
+  indistinguishable on a starfield and soft gradients) and the vignette is
+  pre-rendered once per resize and blitted instead of shaded.
+- **Allocation.** 35 radial gradients and ~470 colour strings were built per
+  frame. Both are now built once.
+
+Also cheaper, and worth having anyway: viewport culling in every pass (at 35
+realms most of the map leaves the screen the moment you zoom), eight batched
+star tiers instead of 900 individual arcs, and skipping bead highlights and rim
+graduations below the size where they resolve.
+
+> **Caveat, stated plainly:** the p95 number is not trustworthy in a headless
+> harness that calls `draw()` in a tight synchronous loop — ablation showed the
+> spikes were identical with every feature disabled, which means they are the
+> measurement, not the page. The average and the call counts are real; the
+> spike fixes are reasoned, not verified.
+
 `?ambient` gives the wall display a slow tour with no chrome.
