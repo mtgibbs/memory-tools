@@ -1,0 +1,19 @@
+.spheregrid-view { padding: 0; overflow: hidden; position: relative; background: #05060a; }
+.spheregrid-view canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+.spheregrid-view canvas.grabbing { cursor: grabbing; }
+.spheregrid-tip {
+  position: absolute; pointer-events: none; z-index: 3; display: none;
+  background: #15151b; color: #ddd; border: 1px solid #2e2e38;
+  padding: 5px 9px; border-radius: 5px; max-width: 340px; line-height: 1.5;
+  font-size: 12px;
+}
+.spheregrid-tip b { color: #fff; font-weight: 600; }
+.spheregrid-empty {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; text-align: center; padding: 40px;
+  color: var(--text-muted); font-size: 13px; line-height: 1.7;
+}
+.spheregrid-empty code {
+  display: block; margin-top: 12px; user-select: all;
+  font-size: 12px; color: var(--text-normal);
+}

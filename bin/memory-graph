@@ -965,12 +965,21 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                        "corridors": [c for c in corridors.values()
                                      if c["a"] in origin and c["b"] in origin]},
                       separators=(",", ":")).replace("</", "<\\/")
-    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "spheregrid.html"
-    tpl = tpl_path.read_text(encoding="utf-8")
-    assert tpl.count("__DATA__") == 1, f"placeholder missing in {tpl_path}"
-    out = Path(a.out).expanduser() if a.out else g.vault / "spheregrid.html"
-    out.write_text(tpl.replace("__DATA__", data))
-    return {"spheregrid": str(out), "notes": len(nodes), "edges": len(edges),
+    tpl_dir = Path(__file__).resolve().parent.parent / "templates"
+    # --data writes only the payload. The Obsidian plugin renders from that file
+    # with the same renderer this page inlines, so there is one implementation of
+    # the map and one implementation of the layout, and neither can drift.
+    if a.data:
+        Path(a.data).expanduser().write_text(data)
+        out = Path(a.data).expanduser()
+    else:
+        tpl = (tpl_dir / "spheregrid.html").read_text(encoding="utf-8")
+        render = (tpl_dir / "spheregrid.render.js").read_text(encoding="utf-8")
+        assert tpl.count("__DATA__") == 1 and tpl.count("__RENDER__") == 1, "placeholder missing"
+        out = Path(a.out).expanduser() if a.out else g.vault / "spheregrid.html"
+        out.write_text(tpl.replace("__RENDER__", render.replace("export function", "function", 1))
+                          .replace("__DATA__", data))
+    return {"spheregrid": str(out), "format": "json" if a.data else "html", "notes": len(nodes), "edges": len(edges),
             "ghost_edges": sum(e["g"] for e in edges),
             "galaxies": sum(1 for r in realms_out if not r["minor"]),
             "minor": sum(1 for r in realms_out if r["minor"]),
@@ -1094,11 +1103,12 @@ def render(cmd: str, data: dict) -> None:
         why = {"cwd": "from this working directory", "flag": "as asked",
                "empty": "this project has no notes yet — showing the largest realm",
                "largest": "largest realm — this cwd has no vault realm"}[data["centre_from"]]
-        print(f"{data['spheregrid']}: centred on {data['centre']} ({why})")
+        print(f"{data['spheregrid']} [{data['format']}]: centred on {data['centre']} ({why})")
         print(f"  {data['notes']} notes in {data['galaxies']} galaxies "
               f"+ {data['minor']} minor, {data['rings']} rings deep")
         print(f"  {data['edges']} links ({data['ghost_edges']} inferred, drawn as ghosts), "
-              f"{data['corridors']} corridors — open in a browser")
+              f"{data['corridors']} corridors"
+              + ("" if data["format"] == "json" else " — open in a browser"))
     elif cmd == "forcemap":
         print(f"{data['forcemap']}: {data['notes']} notes, {data['edges']} edges "
               f"({data['boundary_edges']} boundary), {data['identity_notes']} identity — "
@@ -1130,6 +1140,9 @@ def main() -> int:
                    help="ask about another directory instead of the current one")
     p.add_argument("-n", type=int, default=5, help="how many entry points to list")
     p = sub.add_parser("spheregrid"); p.add_argument("--out", default=None)
+    p.add_argument("--data", metavar="FILE", default=None,
+                   help="write the layout payload as JSON instead of HTML "
+                        "(what the Obsidian plugin renders)")
     p.add_argument("--center", default="auto",
                    help="realm at the origin: a realm slug/substring, or 'auto' (this cwd)")
     p.add_argument("--min-galaxy", type=int, default=4,
