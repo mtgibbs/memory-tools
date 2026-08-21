@@ -113,23 +113,32 @@ function bounds() {
   }
   return [x0, y0, x1, y1];
 }
-function fit() {
+function measure() {
   dpr = window.devicePixelRatio || 1;
   cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
   const [x0, y0, x1, y1] = bounds();
-  baseS = Math.min(innerWidth / (x1 - x0 + 420), innerHeight / (y1 - y0 + 300));
+  baseS = Math.min(innerWidth / (x1 - x0 + 120), innerHeight / (y1 - y0 + 120));
   baseX = innerWidth / 2 - (x0 + x1) / 2 * baseS;
   baseY = innerHeight / 2 - (y0 + y1) / 2 * baseS;
-  scale = baseS; tx = baseX; ty = baseY;
+  return baseS > 0 && isFinite(baseS);
 }
-fit();
+// A window that reports zero width at script time — a background tab, an iframe
+// that has not been laid out — produced baseS = 0, so scale was 0 and the canvas
+// stayed black forever. Nothing later reset it: resize recomputes the base but
+// never the live camera. Fit is retried until the viewport is real.
+function fit() {
+  const ok = measure();
+  if (ok) { scale = baseS; tx = baseX; ty = baseY; }
+  return ok;
+}
+if (!fit()) {
+  const retry = () => { if (!fit()) requestAnimationFrame(retry); };
+  requestAnimationFrame(retry);
+}
 addEventListener("resize", () => {
-  const [x0, y0, x1, y1] = bounds();
-  dpr = window.devicePixelRatio || 1;
-  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
-  baseS = Math.min(innerWidth / (x1 - x0 + 420), innerHeight / (y1 - y0 + 300));
-  baseX = innerWidth / 2 - (x0 + x1) / 2 * baseS;
-  baseY = innerHeight / 2 - (y0 + y1) / 2 * baseS;
+  const had = scale > 0;
+  measure();
+  if (!had) fit();                                  // first real layout: adopt it
 });
 function flyTo(r, pad) {
   tgtS = Math.min(2.2, Math.min(innerWidth, innerHeight) / (r.rad * 2 + (pad || 220)));
@@ -142,7 +151,12 @@ function flyOut() { tgtS = baseS; tgtX = baseX; tgtY = baseY; }
 // One world, one coordinate space, camera moves — so a galaxy is always in the
 // same place and you can build a memory of where things are. Detail is a
 // function of on-screen size alone; nothing is re-laid-out on navigation.
-const BLOB_PX = 44, FULL_PX = 78;
+//
+// The threshold is deliberately low. Everything draws at the fitted view — the
+// packed lattice is the picture, and a level-of-detail rule that hides it until
+// you zoom in is answering a question this corpus does not ask. Blobs are the
+// graceful degradation for zooming far out, not the resting state.
+const BLOB_PX = 13, FULL_PX = 26;
 function detail(r) {                                // 0 = blob, 1 = full grid
   const px = r.rad * scale;
   if (px <= BLOB_PX) return 0;
@@ -174,6 +188,7 @@ function stepSim(t) {
 
 // ---- draw -----------------------------------------------------------------
 function draw(t) {
+  if (!(scale > 0)) fit();                          // never render into a dead camera
   stepSim(t);
   if (tgtS !== null) {
     scale += (tgtS - scale) * 0.07;
@@ -305,18 +320,29 @@ function draw(t) {
 
   // labels last so nothing paints over them
   ctx.textAlign = "center";
+  ctx.lineJoin = "round";
+  const label = (s, x, y) => {                      // halo, then fill
+    ctx.strokeStyle = "rgba(8,8,11,.92)";
+    ctx.lineWidth = 3.2 * k;
+    ctx.strokeText(s, x, y);
+    ctx.fillText(s, x, y);
+  };
   for (const r of R) {
     if (!P.realmLabels) break;
-    const quiet = r.d <= 0 && r.minor && r !== hoverRealm;
-    if (quiet) continue;
-    const up = r.d > 0 ? r.rad + 16 * k : (r.blobR || 6) + 13 * k;
-    ctx.fillStyle = r.centre ? "rgba(255,150,80,.96)" : "hsla(" + r.hue + ",68%,76%,.9)";
-    ctx.font = "600 " + (r.d > 0 ? 14 : r.centre ? 13 : 11.5) * k + "px system-ui";
-    ctx.fillText(r.short, r.x, r.y - up);
-    if (r.d <= 0) {
-      ctx.fillStyle = "rgba(150,150,165,.65)";
-      ctx.font = (9.5 * k) + "px system-ui";
-      ctx.fillText(r.n + " notes", r.x, r.y + (r.blobR || 6) + 14 * k);
+    // a one-note realm names itself twice — its realm label and its only note's
+    // label say nearly the same thing on top of each other. The note wins.
+    if (r.n === 1 && r !== hoverRealm) continue;
+    if (r.d <= 0 && r.minor && r !== hoverRealm) continue;
+    const inside = r.d > 0;
+    const y = inside ? r.y - r.rad + 15 * k : r.y - (r.blobR || 6) - 11 * k;
+    ctx.fillStyle = r.centre ? "rgba(255,160,95,.97)" : "hsla(" + r.hue + ",68%,78%,.92)";
+    const fs = Math.max(9.5, Math.min(13, r.rad * 0.09));
+    ctx.font = "600 " + fs * k + "px system-ui";
+    label(r.short, r.x, y);
+    if (!r.minor || r === hoverRealm) {
+      ctx.fillStyle = "rgba(158,158,172,.62)";
+      ctx.font = (fs * 0.72 * k) + "px system-ui";
+      label(r.n + " notes", r.x, y + fs * 0.95 * k);
     }
   }
   ctx.font = (11 / scale) + "px system-ui";
@@ -328,8 +354,8 @@ function draw(t) {
       const show = P.noteLabels === "all" || near || n.anchor ||
                    (P.noteLabels === "hubs" && n.conn >= 8);
       if (!show) continue;
-      ctx.fillStyle = near ? "#fff" : n.anchor ? "rgba(235,235,242,.9)" : "rgba(190,190,202,.7)";
-      ctx.fillText(n.stem, n.x, n.y + n.rad * (n.anchor ? 1.7 : 1) + 12 / scale);
+      ctx.fillStyle = near ? "#fff" : n.anchor ? "rgba(238,238,245,.94)" : "rgba(194,194,206,.78)";
+      label(n.stem, n.x, n.y + n.rad * (n.anchor ? 1.7 : 1) + 12 / scale);
     }
     ctx.globalAlpha = 1;
   }

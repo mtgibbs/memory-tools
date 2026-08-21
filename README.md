@@ -217,22 +217,38 @@ memory-graph spheregrid --center pi-cluster    # centred somewhere else
 memory-graph spheregrid --min-galaxy 4         # under 4 notes renders as minor
 ```
 
-- **angle** is which realm you're in
 - **radius** is hops from that realm's anchor — the note with the most authored
   inbound links from inside its own realm
-- a crowded hop band spills into concentric **arc rows**, most-connected inside
+- within a hop, **angle** is set by a golden-angle spiral, most-connected first
 
-Both become quantities you can read, and the output is byte-identical on every
-run over an unchanged corpus — so a place on the map can be pointed at twice.
-That is the thing the force map cannot do.
+Radius stays readable, and the output is byte-identical on every run over an
+unchanged corpus — so a place on the map can be pointed at twice. That is the
+thing the force map cannot do.
+
+**There is no centre.** Realms are peers packed to fill the frame, largest first,
+each taking the free spot nearest the middle. An earlier version put `--center`
+at the origin and ranked the rest by corridor distance, which made one arbitrary
+realm the subject of the whole map — pi-cluster sat in the middle because it was
+the biggest, which is not a reason. `--center` now only marks *where you are*.
+
+**Notes pack at constant density, not on fixed rings.** One circle per hop wastes
+the disc whenever a band is thin: `notes-from-hearing` runs 1/6/4/1 across four
+hops, so its last lonely note sat at radius 100 and set the size of a disc whose
+other eleven were bunched inside 63. Every small realm rendered as a few dots
+marooned in a large empty circle. A Vogel spiral (`r = c·√i`, golden-angle step)
+fixes spacing instead of radii, so a disc's size tracks how many notes it holds.
+Hop boundaries are still recorded as they pass, and still drawn as rings.
 
 Physics survives as animation only. Springs pull each node to its assigned slot;
 dragging displaces a node and letting go returns it. Nothing at run time can
 change where a note lives.
 
-**One world, camera moves.** Zoomed out it reads as a graph of galaxies; zoom in
-and a galaxy resolves into its own grid. Nothing is re-laid-out on navigation, so
-pi-cluster is always in the same place and you can learn where things are.
+**One world, camera moves.** Nothing is re-laid-out on navigation, so pi-cluster
+is always in the same place and you can learn where things are. Every note draws
+at every zoom — the packed lattice *is* the picture, and a level-of-detail rule
+that hides it until you zoom in is answering a question this corpus does not ask.
+Collapsing a realm to a single blob is the graceful degradation for zooming far
+out, not the resting state.
 
 **`--center` is the entry point, not a preference.** An agent working in
 pi-cluster enters the map at pi-cluster's root, so radius means "hops from where

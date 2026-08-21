@@ -583,7 +583,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
     discs placed on the plane by corridor distance from --center, so zoomed out
     the map reads as a graph of galaxies and zoomed in each one resolves into its
     own grid."""
-    RING0, ROW_GAP, HOP_GAP, MIN_ARC = 44.0, 17.0, 30.0, 26.0
+    SPACING = 21.0                    # world units between neighbouring notes
     GA = 2.399963229728653          # golden angle, same constant the forcemap uses
 
     def short(slug: str) -> str:
@@ -666,18 +666,6 @@ def cmd_spheregrid(g: Graph, a) -> dict:
             e["n"] += 1
             e["auth"] += int(prov == "authored")
 
-    dist = {centre_realm: 0}
-    q = deque([centre_realm])
-    while q:
-        cur = q.popleft()
-        for nxt in sorted(radj[cur]):
-            if nxt in by_realm and nxt not in dist:
-                dist[nxt] = dist[cur] + 1
-                q.append(nxt)
-    far = max(dist.values(), default=0) + 1
-    for r in by_realm:
-        dist.setdefault(r, far)          # nothing links to it — park it at the rim
-
     # ---- per-realm sphere grid -------------------------------------------
     # Positions are realm-local here; the global offset is added once the discs
     # are placed, so a realm's interior never changes when the map re-centres.
@@ -695,87 +683,73 @@ def cmd_spheregrid(g: Graph, a) -> dict:
         for m in members:
             hop_of[m] = hop[m]
             rings[hop[m]].append(m)
-        # A hop band is not one circle. pi-cluster puts 40 of its 59 notes one hop
-        # from its anchor — as a single ring that is an unreadable necklace, and
-        # radius stops carrying information because almost every node shares it.
-        # So a band spills into concentric ARC ROWS the way RUBRIC's memory disc
-        # does, most-connected on the inside row, and the gap between bands stays
-        # wider than the gap between rows so a hop boundary is still visible.
-        hop_r: list[float] = []
-        cur = 0.0
-        max_r = 0.0
+        # Concentric rings — one circle per hop — waste the disc whenever a band
+        # is thin. notes-from-hearing runs 1/6/4/1 across four hops, so its last
+        # lonely note sat at radius 100 and set the size of a disc whose other
+        # eleven notes were bunched inside radius 63. Every small realm rendered
+        # as a few dots marooned in a large empty circle.
+        #
+        # A Vogel spiral fixes the density instead of the radii: r = c*sqrt(i)
+        # with a golden-angle step packs every node at uniform spacing, so a
+        # disc's size tracks how many notes it holds rather than how many hops
+        # they happen to span. Order is still hop-major, so radius stays monotone
+        # in distance from the anchor and the hop boundaries are still real —
+        # they are recorded as they pass and drawn as rings by the template.
+        order: list[str] = []
         for h in sorted(rings):
-            ms = sorted(rings[h], key=lambda m: (-len(g.undirected(m)), m))
-            if h == 0 and len(ms) == 1:
-                pos[ms[0]] = (0.0, 0.0)
-                cur = RING0
-                hop_r.append(0.0)
-                continue
-            cur = max(cur, RING0)
-            hop_r.append(round(cur, 1))
-            row = 0
-            while ms:
-                rad = cur + row * ROW_GAP
-                cap = max(6, int(2 * math.pi * rad / MIN_ARC))
-                take, ms = ms[:cap], ms[cap:]
-                off = GA * (h + row)     # stagger rows so nodes never line up radially
-                for j, m in enumerate(take):
-                    th = 2 * math.pi * j / len(take) + off
-                    pos[m] = (rad * math.cos(th), rad * math.sin(th))
-                max_r = max(max_r, rad)
-                row += 1
-            cur = cur + max(1, row - 1) * ROW_GAP + HOP_GAP
+            order.extend(sorted(rings[h], key=lambda m: (-len(g.undirected(m)), m)))
+        hop_r: list[float] = []
+        seen_hop: int | None = None
+        max_r = 0.0
+        for i, m in enumerate(order):
+            rad = SPACING * math.sqrt(i)
+            th = GA * i
+            pos[m] = (rad * math.cos(th), rad * math.sin(th))
+            max_r = max(max_r, rad)
+            if hop_of[m] != seen_hop:
+                seen_hop = hop_of[m]
+                if rad > 6:
+                    hop_r.append(round(rad, 1))
         realms_out.append({"name": realm, "short": short(realm),
                            "work": realm.startswith("work--"),
                            "n": len(members), "anchor": anchor.split("/")[-1],
-                           "hue": hues[realm], "rad": max_r + 22, "hopR": hop_r,
-                           "dist": dist[realm], "rings": max(rings) if rings else 0,
+                           "hue": hues[realm], "rad": max_r + 14, "hopR": hop_r,
+                           "rings": max(rings) if rings else 0,
                            "centre": realm == centre_realm,
                            "minor": len(members) < a.min_galaxy})
 
-    # ---- place the discs --------------------------------------------------
-    # Ring per corridor-distance; within a ring, angle is shared out in
-    # proportion to disc size so a 60-note galaxy is not given the same slice as
-    # a 2-note one. Then a relaxation pass separates any pair still overlapping.
-    by_dist: dict[int, list[dict]] = defaultdict(list)
-    for r in realms_out:
-        by_dist[r["dist"]].append(r)
-    ring_r = 0.0
-    for d in sorted(by_dist):
-        band = sorted(by_dist[d], key=lambda r: (-r["n"], r["name"]))
-        if d == 0:
-            for r in band:
-                r["x"] = r["y"] = 0.0
-            ring_r = max(r["rad"] for r in band) if band else 0.0
+    # ---- pack the discs to fill the plane --------------------------------
+    # No centre and no concentric frame: realms are peers and density fills the
+    # frame. An earlier pass put the --center realm at the origin and ranked the
+    # rest by corridor distance, which made one arbitrary realm the subject of
+    # the whole map — pi-cluster sat in the middle because it was the biggest,
+    # which is not a reason.
+    #
+    # Placement is tangent packing: each disc takes the valid position closest to
+    # the middle, scored on an ellipse so the cluster spreads to a screen's shape
+    # instead of a circle. Discs cannot overlap by construction, which retires
+    # the 400 x R^2 relaxation pass this used to need.
+    ASPECT, GAP = 1.7, 20.0
+    placed: list[dict] = []
+    for r in sorted(realms_out, key=lambda r: (-r["rad"], r["name"])):
+        if not placed:
+            r["x"] = r["y"] = 0.0
+            placed.append(r)
             continue
-        widest = max(r["rad"] for r in band)
-        # LABEL_ROOM is why the ring is bigger than geometry alone needs: a realm
-        # name is ~150px of text hanging off a disc that may only be 22 across,
-        # and a band packed to touching discs collides every label in it.
-        LABEL_ROOM = 150.0
-        need = sum(2 * r["rad"] + LABEL_ROOM for r in band) / (2 * math.pi)
-        ring_r = max(ring_r + widest * 2.2 + 150, need)
-        span = sum(2 * r["rad"] + LABEL_ROOM for r in band)
-        acc = 0.0
-        for r in band:
-            acc += r["rad"] + LABEL_ROOM / 2
-            th = 2 * math.pi * acc / span + GA * d
-            r["x"] = ring_r * math.cos(th)
-            r["y"] = ring_r * math.sin(th)
-            acc += r["rad"] + LABEL_ROOM / 2
-    for _ in range(400):                 # separate overlaps without moving the centre
-        for i in range(len(realms_out)):
-            for j in range(i + 1, len(realms_out)):
-                A, B = realms_out[i], realms_out[j]
-                dx, dy = B["x"] - A["x"], B["y"] - A["y"]
-                d = math.hypot(dx, dy) or 0.01
-                want_d = A["rad"] + B["rad"] + 90
-                if d < want_d:
-                    f = (want_d - d) / d * 0.25
-                    if A["dist"]:
-                        A["x"] -= dx * f; A["y"] -= dy * f
-                    if B["dist"]:
-                        B["x"] += dx * f; B["y"] += dy * f
+        best = None
+        for host in placed:
+            reach = host["rad"] + r["rad"] + GAP
+            for k in range(72):
+                th = 2 * math.pi * k / 72
+                x, y = host["x"] + reach * math.cos(th), host["y"] + reach * math.sin(th)
+                if any(math.hypot(x - q["x"], y - q["y"]) < q["rad"] + r["rad"] + GAP - 1e-6
+                       for q in placed):
+                    continue
+                score = math.hypot(x / ASPECT, y)
+                if best is None or score < best[0]:
+                    best = (score, x, y)
+        r["x"], r["y"] = (best[1], best[2]) if best else (0.0, 0.0)
+        placed.append(r)
 
     origin = {r["name"]: (r["x"], r["y"]) for r in realms_out}
 
