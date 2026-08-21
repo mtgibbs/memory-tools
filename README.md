@@ -200,3 +200,50 @@ memory-graph brief verify gate false-green   # §6-ready markdown, top 5 notes
 Ranked by term match, authored links listed, invalidated notes excluded —
 history must not brief new work. Curate before pasting; it's a draft, not an
 oracle, and it says so in its own header comment.
+
+### `memory-graph spheregrid` — the atlas that holds still
+
+The force map makes every edge a force, so a note that reaches into five realms
+gets dragged to the barycentre and the realm structure smears. It fights that
+with three separate corrections — crippled boundary springs, a per-realm field,
+a pre-pass that packs anchors before physics starts — which is three attempts to
+make a simulation stop simulating.
+
+This one assigns positions instead.
+
+```bash
+memory-graph spheregrid                        # centred on this project
+memory-graph spheregrid --center pi-cluster    # centred somewhere else
+memory-graph spheregrid --min-galaxy 4         # under 4 notes renders as minor
+```
+
+- **angle** is which realm you're in
+- **radius** is hops from that realm's anchor — the note with the most authored
+  inbound links from inside its own realm
+- a crowded hop band spills into concentric **arc rows**, most-connected inside
+
+Both become quantities you can read, and the output is byte-identical on every
+run over an unchanged corpus — so a place on the map can be pointed at twice.
+That is the thing the force map cannot do.
+
+Physics survives as animation only. Springs pull each node to its assigned slot;
+dragging displaces a node and letting go returns it. Nothing at run time can
+change where a note lives.
+
+**One world, camera moves.** Zoomed out it reads as a graph of galaxies; zoom in
+and a galaxy resolves into its own grid. Nothing is re-laid-out on navigation, so
+pi-cluster is always in the same place and you can learn where things are.
+
+**`--center` is the entry point, not a preference.** An agent working in
+pi-cluster enters the map at pi-cluster's root, so radius means "hops from where
+I came in." Default is `auto`: the realm slug for the current directory, which is
+the absolute path with every separator turned into a dash — the same rule Claude
+Code uses to name the folder.
+
+Expired notes stay drawn as hollow outlines. They are terrain, not deletions —
+the FFX grid keeps its unlit regions on screen, and so does this. Challenged
+claims get a broken ring. Inferred links are ghost chords, **off by default**:
+vocabulary overlap drawn at the same weight as something you wrote is how machine
+echo starts looking like corroboration.
+
+`?ambient` gives the wall display a slow tour with no chrome.

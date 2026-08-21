@@ -22,12 +22,13 @@ accordingly — an inferred link is a suggestion, not an assertion.
   graph.py realms                        per-realm connectivity summary
   graph.py canvas [--out FILE]           realm zones as an Obsidian .canvas file
   graph.py forcemap [--out FILE]         force-directed map with realm forcefields (HTML)
+  graph.py spheregrid [--center R]       assigned-position atlas, galaxies + rings (HTML)
 
 Add --json to any subcommand for machine-readable output.
 """
 
 from __future__ import annotations
-import argparse, json, os, re, sys
+import argparse, json, math, os, re, sys
 from collections import defaultdict, deque
 from pathlib import Path
 
@@ -526,6 +527,321 @@ def cmd_forcemap(g: Graph, a) -> dict:
             "identity_notes": sum(1 for n in nodes if n["gold"])}
 
 
+def _realm_slug_for_cwd() -> str:
+    """The vault folder name Claude Code derives from a working directory:
+    the absolute path with every separator turned into a dash. This is the hook
+    that lets a session ask "which galaxy am I in?" without being told."""
+    return str(Path.cwd().resolve()).replace(os.sep, "-")
+
+
+def _anchor_of(g: Graph, members: list[str]) -> str:
+    """The note a realm is actually about — most AUTHORED inbound links from
+    inside its own realm. Authored-only for the same reason cmd_keystones ranks
+    that way: a machine-guessed link is vocabulary overlap, not endorsement, and
+    letting it pick the centre would put whichever note shares the most jargon
+    at the heart of the map. Ties break on total degree, then name, so the
+    anchor never moves between runs on a corpus that has not changed."""
+    def rank(n: str) -> tuple:
+        auth = sum(1 for s, p in g.inn[n] if p == "authored" and g.realm.get(s) == g.realm[n])
+        return (-auth, -len(g.undirected(n)), n)
+    return min(members, key=rank)
+
+
+def _hops_from(g: Graph, start: str, within: set[str]) -> dict[str, int]:
+    """BFS confined to one realm. Radius on the finished map means this number,
+    so it must not be able to leak out of the realm and come back — a two-hop
+    detour through another galaxy is not what 'close to the centre' should mean."""
+    hop = {start: 0}
+    q = deque([start])
+    while q:
+        cur = q.popleft()
+        for nxt in g.undirected(cur):
+            if nxt in within and nxt not in hop:
+                hop[nxt] = hop[cur] + 1
+                q.append(nxt)
+    return hop
+
+
+def cmd_spheregrid(g: Graph, a) -> dict:
+    """The sphere-grid atlas: assigned positions, drawn links, no layout physics.
+
+    A force graph makes every edge a force, so a note that reaches into five
+    realms gets dragged to the barycentre and the realm structure smears. The
+    forcemap fights that with three separate corrections (crippled boundary
+    springs, a per-realm field, a pre-pass that packs anchors before physics
+    starts) — three attempts to make a simulation stop simulating. Here position
+    is computed once and kept: angle is which realm, radius is how many hops
+    from that realm's anchor. Both become quantities you can read, and the map
+    is byte-identical on every run over an unchanged corpus, so a place on it
+    can be pointed at twice.
+
+    Motion survives as animation only — the template springs each node toward
+    the slot computed here. Dragging displaces a node; letting go returns it.
+
+    Layout is two nested problems. Inside a realm, notes sit on concentric rings
+    by hop distance from the anchor (RUBRIC's memory disc). Realms themselves are
+    discs placed on the plane by corridor distance from --center, so zoomed out
+    the map reads as a graph of galaxies and zoomed in each one resolves into its
+    own grid."""
+    RING0, ROW_GAP, HOP_GAP, MIN_ARC = 44.0, 17.0, 30.0, 26.0
+    GA = 2.399963229728653          # golden angle, same constant the forcemap uses
+
+    def short(slug: str) -> str:
+        s = slug.removeprefix("work--").removeprefix("-Users-mtgibbs-")
+        return s or slug
+
+    # Hashed into a curated set, not across the whole wheel. A free hash gives you
+    # red next to lime next to cyan and the map reads as noise; these ten hues
+    # share a register so realm colour stays an identifier instead of competing
+    # for attention. 22-26 is left out on purpose — the accent belongs to
+    # whichever realm is the centre, and a second orange galaxy reads as home.
+    PALETTE = (265, 315, 205, 174, 48, 288, 194, 338, 158, 226)
+
+    def hue_map(names: list[str]) -> dict[str, int]:
+        """Hash for the preference, probe for the collision.
+
+        Straight `PALETTE[h % 10]` over fifteen realms is a guaranteed clash —
+        pi-cluster, mtgibbs-xyz and font-color all landed on 288, which makes
+        colour useless exactly where the map is busiest. Probing walks to the
+        next free slot, then to shifted variants, so every realm gets its own.
+        Assignment runs in name order, so it is the same on every run over the
+        same set of realms."""
+        taken: set[int] = set()
+        out: dict[str, int] = {}
+        for name in sorted(names):
+            h = 0
+            for ch in name:
+                h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+            start = h % len(PALETTE)
+            for step in range(len(PALETTE) * 3):
+                base = PALETTE[(start + step) % len(PALETTE)]
+                hue = (base + (step // len(PALETTE)) * 13) % 360
+                if hue not in taken:
+                    break
+            taken.add(hue)
+            out[name] = hue
+        return out
+
+    # ---- membership ------------------------------------------------------
+    by_realm: dict[str, list[str]] = defaultdict(list)
+    for node, realm in g.realm.items():
+        if node.split("/")[-1] != "MEMORY":
+            by_realm[realm].append(node)
+    by_realm = {r: sorted(m) for r, m in by_realm.items() if m}
+    hues = hue_map(list(by_realm))
+
+    # ---- which galaxy is the centre --------------------------------------
+    want = a.center
+    if want in (None, "auto"):
+        slug = _realm_slug_for_cwd()
+        want = slug if slug in by_realm else None
+        # a realm that exists but holds only its MEMORY.md is not "not a realm" —
+        # it is a project that has not written anything down yet, and saying so
+        # is the difference between a bug report and a nudge
+        centre_from = "cwd" if want else (
+            "empty" if (g.vault / slug).is_dir() else "largest")
+    else:
+        centre_from = "flag"
+    if want not in by_realm:
+        hits = [r for r in by_realm if want and want in r]
+        want = hits[0] if len(hits) == 1 else max(by_realm, key=lambda r: len(by_realm[r]))
+    centre_realm = want
+
+    # ---- realm adjacency, for corridor distance --------------------------
+    corridors: dict[frozenset, dict] = {}
+    radj: dict[str, set[str]] = defaultdict(set)
+    for src in g.realm:
+        if src.split("/")[-1] == "MEMORY":
+            continue
+        for dst, prov in g.out[src]:
+            if dst not in g.realm or dst.split("/")[-1] == "MEMORY":
+                continue
+            ra, rb = g.realm[src], g.realm[dst]
+            if ra == rb:
+                continue
+            radj[ra].add(rb)
+            radj[rb].add(ra)
+            k = frozenset([ra, rb])
+            e = corridors.setdefault(k, {"a": ra, "b": rb, "n": 0, "auth": 0})
+            e["n"] += 1
+            e["auth"] += int(prov == "authored")
+
+    dist = {centre_realm: 0}
+    q = deque([centre_realm])
+    while q:
+        cur = q.popleft()
+        for nxt in sorted(radj[cur]):
+            if nxt in by_realm and nxt not in dist:
+                dist[nxt] = dist[cur] + 1
+                q.append(nxt)
+    far = max(dist.values(), default=0) + 1
+    for r in by_realm:
+        dist.setdefault(r, far)          # nothing links to it — park it at the rim
+
+    # ---- per-realm sphere grid -------------------------------------------
+    # Positions are realm-local here; the global offset is added once the discs
+    # are placed, so a realm's interior never changes when the map re-centres.
+    pos: dict[str, tuple[float, float]] = {}
+    hop_of: dict[str, int] = {}
+    realms_out: list[dict] = []
+    for realm, members in sorted(by_realm.items()):
+        mset = set(members)
+        anchor = _anchor_of(g, members)
+        hop = _hops_from(g, anchor, mset)
+        rim = max(hop.values(), default=0) + 1
+        for m in members:
+            hop.setdefault(m, rim)       # unreachable inside its own realm: the outer rim
+        rings: dict[int, list[str]] = defaultdict(list)
+        for m in members:
+            hop_of[m] = hop[m]
+            rings[hop[m]].append(m)
+        # A hop band is not one circle. pi-cluster puts 40 of its 59 notes one hop
+        # from its anchor — as a single ring that is an unreadable necklace, and
+        # radius stops carrying information because almost every node shares it.
+        # So a band spills into concentric ARC ROWS the way RUBRIC's memory disc
+        # does, most-connected on the inside row, and the gap between bands stays
+        # wider than the gap between rows so a hop boundary is still visible.
+        hop_r: list[float] = []
+        cur = 0.0
+        max_r = 0.0
+        for h in sorted(rings):
+            ms = sorted(rings[h], key=lambda m: (-len(g.undirected(m)), m))
+            if h == 0 and len(ms) == 1:
+                pos[ms[0]] = (0.0, 0.0)
+                cur = RING0
+                hop_r.append(0.0)
+                continue
+            cur = max(cur, RING0)
+            hop_r.append(round(cur, 1))
+            row = 0
+            while ms:
+                rad = cur + row * ROW_GAP
+                cap = max(6, int(2 * math.pi * rad / MIN_ARC))
+                take, ms = ms[:cap], ms[cap:]
+                off = GA * (h + row)     # stagger rows so nodes never line up radially
+                for j, m in enumerate(take):
+                    th = 2 * math.pi * j / len(take) + off
+                    pos[m] = (rad * math.cos(th), rad * math.sin(th))
+                max_r = max(max_r, rad)
+                row += 1
+            cur = cur + max(1, row - 1) * ROW_GAP + HOP_GAP
+        realms_out.append({"name": realm, "short": short(realm),
+                           "work": realm.startswith("work--"),
+                           "n": len(members), "anchor": anchor.split("/")[-1],
+                           "hue": hues[realm], "rad": max_r + 22, "hopR": hop_r,
+                           "dist": dist[realm], "rings": max(rings) if rings else 0,
+                           "centre": realm == centre_realm,
+                           "minor": len(members) < a.min_galaxy})
+
+    # ---- place the discs --------------------------------------------------
+    # Ring per corridor-distance; within a ring, angle is shared out in
+    # proportion to disc size so a 60-note galaxy is not given the same slice as
+    # a 2-note one. Then a relaxation pass separates any pair still overlapping.
+    by_dist: dict[int, list[dict]] = defaultdict(list)
+    for r in realms_out:
+        by_dist[r["dist"]].append(r)
+    ring_r = 0.0
+    for d in sorted(by_dist):
+        band = sorted(by_dist[d], key=lambda r: (-r["n"], r["name"]))
+        if d == 0:
+            for r in band:
+                r["x"] = r["y"] = 0.0
+            ring_r = max(r["rad"] for r in band) if band else 0.0
+            continue
+        widest = max(r["rad"] for r in band)
+        # LABEL_ROOM is why the ring is bigger than geometry alone needs: a realm
+        # name is ~150px of text hanging off a disc that may only be 22 across,
+        # and a band packed to touching discs collides every label in it.
+        LABEL_ROOM = 150.0
+        need = sum(2 * r["rad"] + LABEL_ROOM for r in band) / (2 * math.pi)
+        ring_r = max(ring_r + widest * 2.2 + 150, need)
+        span = sum(2 * r["rad"] + LABEL_ROOM for r in band)
+        acc = 0.0
+        for r in band:
+            acc += r["rad"] + LABEL_ROOM / 2
+            th = 2 * math.pi * acc / span + GA * d
+            r["x"] = ring_r * math.cos(th)
+            r["y"] = ring_r * math.sin(th)
+            acc += r["rad"] + LABEL_ROOM / 2
+    for _ in range(400):                 # separate overlaps without moving the centre
+        for i in range(len(realms_out)):
+            for j in range(i + 1, len(realms_out)):
+                A, B = realms_out[i], realms_out[j]
+                dx, dy = B["x"] - A["x"], B["y"] - A["y"]
+                d = math.hypot(dx, dy) or 0.01
+                want_d = A["rad"] + B["rad"] + 90
+                if d < want_d:
+                    f = (want_d - d) / d * 0.25
+                    if A["dist"]:
+                        A["x"] -= dx * f; A["y"] -= dy * f
+                    if B["dist"]:
+                        B["x"] += dx * f; B["y"] += dy * f
+
+    origin = {r["name"]: (r["x"], r["y"]) for r in realms_out}
+
+    # ---- nodes ------------------------------------------------------------
+    nodes, index = [], {}
+    for realm, members in sorted(by_realm.items()):
+        ox, oy = origin[realm]
+        for node in members:
+            stem = node.split("/")[-1]
+            path = g.vault / realm / "memory" / (stem + ".md")
+            try:
+                head = path.read_text(encoding="utf-8", errors="replace")[:600]
+            except OSError:
+                head = ""
+            lx, ly = pos[node]
+            index[node] = len(nodes)
+            nodes.append({"stem": stem, "realm": realm, "short": short(realm),
+                          "work": realm.startswith("work--"),
+                          "gold": bool(TYPE_RE.search(head)),
+                          "dead": node in g.status,
+                          "chal": len(g.challenged.get(node, [])),
+                          "hop": hop_of[node],
+                          "deg": sum(1 for _, p in g.inn[node] if p == "authored"),
+                          "conn": len(g.undirected(node)),
+                          "x": round(ox + lx, 2), "y": round(oy + ly, 2)})
+
+    # ---- edges ------------------------------------------------------------
+    # A pair linked both by hand and by the inference pass counts as authored:
+    # the machine agreeing with you does not downgrade what you wrote.
+    pairs: dict[frozenset, dict] = {}
+    for src in index:
+        for dst, prov in g.out[src]:
+            if dst not in index or dst == src:
+                continue
+            k = frozenset([src, dst])
+            e = pairs.get(k)
+            if e is None:
+                e = pairs[k] = {"s": index[src], "t": index[dst],
+                                "i": int(g.realm[src] == g.realm[dst]),
+                                "b": int(nodes[index[src]]["work"] != nodes[index[dst]]["work"]),
+                                "g": 1}
+            if prov == "authored":
+                e["g"] = 0
+    edges = list(pairs.values())
+
+    data = json.dumps({"vault": g.vault.name, "root": str(g.vault),
+                       "centre": centre_realm, "centre_short": short(centre_realm),
+                       "centre_from": centre_from,
+                       "nodes": nodes, "edges": edges, "realms": realms_out,
+                       "corridors": [c for c in corridors.values()
+                                     if c["a"] in origin and c["b"] in origin]},
+                      separators=(",", ":")).replace("</", "<\\/")
+    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "spheregrid.html"
+    tpl = tpl_path.read_text(encoding="utf-8")
+    assert tpl.count("__DATA__") == 1, f"placeholder missing in {tpl_path}"
+    out = Path(a.out).expanduser() if a.out else g.vault / "spheregrid.html"
+    out.write_text(tpl.replace("__DATA__", data))
+    return {"spheregrid": str(out), "notes": len(nodes), "edges": len(edges),
+            "ghost_edges": sum(e["g"] for e in edges),
+            "galaxies": sum(1 for r in realms_out if not r["minor"]),
+            "minor": sum(1 for r in realms_out if r["minor"]),
+            "corridors": len(corridors), "centre": short(centre_realm),
+            "centre_from": centre_from,
+            "rings": max((r["rings"] for r in realms_out), default=0)}
+
+
 def render(cmd: str, data: dict) -> None:
     if cmd == "neighbors":
         flag = data.get("status")
@@ -606,6 +922,15 @@ def render(cmd: str, data: dict) -> None:
         print(f"{data['canvas']}: {data['notes']} notes, {data['zones']} zones, "
               f"{data['cross_realm_edges']} cross-realm edges "
               f"({data['boundary_edges']} boundary, purple)")
+    elif cmd == "spheregrid":
+        why = {"cwd": "from this working directory", "flag": "as asked",
+               "empty": "this project has no notes yet — showing the largest realm",
+               "largest": "largest realm — this cwd has no vault realm"}[data["centre_from"]]
+        print(f"{data['spheregrid']}: centred on {data['centre']} ({why})")
+        print(f"  {data['notes']} notes in {data['galaxies']} galaxies "
+              f"+ {data['minor']} minor, {data['rings']} rings deep")
+        print(f"  {data['edges']} links ({data['ghost_edges']} inferred, drawn as ghosts), "
+              f"{data['corridors']} corridors — open in a browser")
     elif cmd == "forcemap":
         print(f"{data['forcemap']}: {data['notes']} notes, {data['edges']} edges "
               f"({data['boundary_edges']} boundary), {data['identity_notes']} identity — "
@@ -630,13 +955,18 @@ def main() -> int:
     sub.add_parser("realms")
     p = sub.add_parser("canvas"); p.add_argument("--out", default=None)
     p = sub.add_parser("forcemap"); p.add_argument("--out", default=None)
+    p = sub.add_parser("spheregrid"); p.add_argument("--out", default=None)
+    p.add_argument("--center", default="auto",
+                   help="realm at the origin: a realm slug/substring, or 'auto' (this cwd)")
+    p.add_argument("--min-galaxy", type=int, default=4,
+                   help="realms under this many notes render as minor, not their own galaxy")
 
     a = ap.parse_args()
     a.cmd = a.cmd.replace("-", "_")
     g = Graph(Path(a.vault).expanduser())
     data = {"neighbors": cmd_neighbors, "path": cmd_path, "keystones": cmd_keystones,
             "orphans": cmd_orphans, "realms": cmd_realms, "brief": cmd_brief,
-            "canvas": cmd_canvas, "forcemap": cmd_forcemap,
+            "canvas": cmd_canvas, "forcemap": cmd_forcemap, "spheregrid": cmd_spheregrid,
             "stale_refs": cmd_stale_refs, "challenged": cmd_challenged}[a.cmd](g, a)
     print(json.dumps(data, indent=2)) if a.json else render(a.cmd, data)
     return 0

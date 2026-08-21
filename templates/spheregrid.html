@@ -1,0 +1,477 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>memory atlas — sphere grid</title>
+<style>
+html,body{margin:0;height:100%;background:#08080b;overflow:hidden;
+ font:12px -apple-system,system-ui,sans-serif;color:#c8c8d0}
+#c{display:block;width:100vw;height:100vh;cursor:grab}
+#c.grabbing{cursor:grabbing}
+#tip{position:fixed;pointer-events:none;background:#15151b;color:#ddd;border:1px solid #2e2e38;
+ padding:5px 9px;border-radius:5px;display:none;max-width:340px;z-index:3;line-height:1.5}
+#tip b{color:#fff;font-weight:600}
+#hud{position:fixed;left:14px;top:12px;z-index:2;pointer-events:none}
+#hud .t{font:600 13px system-ui;color:#e8e8ef;letter-spacing:.04em}
+#hud .s{color:#6f6f7e;margin-top:2px}
+#hud .s em{color:#ff7a33;font-style:normal}
+#legend{position:fixed;left:14px;bottom:12px;color:#83838f;background:rgba(8,8,11,.86);
+ padding:9px 11px;border-radius:6px;line-height:1.8;z-index:2;border:1px solid #1d1d25}
+.sw{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:-1px}
+#panels{position:fixed;right:12px;top:12px;z-index:2;display:flex;flex-direction:column;
+ gap:8px;align-items:flex-end}
+#panels details{color:#b0b0bc;background:rgba(8,8,11,.92);padding:8px 12px;border-radius:6px;
+ user-select:none;border:1px solid #1d1d25;min-width:196px}
+#panels summary{cursor:pointer;color:#dcdce4;font-weight:600;margin-bottom:5px}
+#panels label{display:flex;align-items:center;gap:8px;margin:5px 0;white-space:nowrap}
+#panels label span:first-child{width:92px;color:#83838f}
+#panels input[type=range]{width:120px;accent-color:#ff7a33}
+#panels input[type=checkbox]{accent-color:#ff7a33}
+#panels .val{width:40px;text-align:right;color:#dcdce4;font-variant-numeric:tabular-nums}
+#panels select,#panels button{background:#17171e;color:#c8c8d0;border:1px solid #2e2e38;
+ border-radius:4px;padding:3px 8px;cursor:pointer;font:11px system-ui}
+#panels button:hover,#panels select:hover{background:#21212a;color:#fff}
+#panels button{margin-top:7px;width:100%}
+.ambient #panels,.ambient #legend,.ambient #hud{display:none}
+.ambient #c{cursor:none}
+</style></head><body>
+<canvas id="c"></canvas><div id="tip"></div>
+<div id="hud"><div class="t" id="hud-t"></div><div class="s" id="hud-s"></div></div>
+<div id="legend">
+ <span class="sw" style="background:#ffd54a"></span>identity note (user / feedback)<br>
+ <span class="sw" style="background:none;border:1px solid #64646e;width:7px;height:7px"></span>expired / superseded — still terrain<br>
+ <span class="sw" style="background:none;border:1px solid #ff5d3d;width:7px;height:7px"></span>open challenge on a claim<br>
+ <span class="sw" style="background:#e8e8ef"></span>anchor — what the realm is about<br>
+ radius = hops from the anchor &middot; angle = position in its realm<br>
+ scroll to zoom &middot; drag to pan &middot; click a galaxy to fly &middot; click a note for Obsidian
+</div>
+<div id="panels">
+<details id="disp" open><summary>display</summary></details>
+<details id="jump"><summary>galaxies</summary></details>
+</div>
+<script>
+"use strict";
+const DATA = __DATA__;
+document.title = DATA.vault + " — sphere grid";
+
+// ?ambient — wall-display mode: no chrome, slow tour, periodic reload so a
+// long-lived kiosk picks up a regenerated file.
+const AMBIENT = new URLSearchParams(location.search).has("ambient");
+if (AMBIENT) {
+  document.body.classList.add("ambient");
+  setTimeout(() => location.reload(), 15 * 60 * 1000);
+}
+
+const N = DATA.nodes, E = DATA.edges, R = DATA.realms, CORR = DATA.corridors;
+const GOLD = "#ffd54a", ASH = "#5c5c66", CHAL = "#ff5d3d", ACCENT = "#ff7a33";
+
+// ---- display options ------------------------------------------------------
+// Ghosts default OFF. An inferred link is vocabulary overlap, and drawing it at
+// the same weight as something you wrote is how machine echo starts looking
+// like corroboration.
+const DEFAULTS = { ghosts: false, rings: true, chords: 0.17, realmLabels: true,
+                   noteLabels: "hover", glow: true, motion: true };
+const P = { ...DEFAULTS };
+try { Object.assign(P, JSON.parse(localStorage.getItem("spheregrid-opts") || "{}")); } catch (e) {}
+const save = () => { try { localStorage.setItem("spheregrid-opts", JSON.stringify(P)); } catch (e) {} };
+
+// ---- index ----------------------------------------------------------------
+const realmOf = new Map(R.map(r => [r.name, r]));
+R.forEach(r => { r.members = []; r.lit = 0; });
+N.forEach((n, i) => {
+  n.i = i; n.adj = new Set();
+  n.hx = n.x; n.hy = n.y;              // the assigned slot — the map's actual claim
+  n.vx = 0; n.vy = 0;
+  n.R = realmOf.get(n.realm);
+  n.R.members.push(n);
+  n.rad = 2.4 + Math.min(7.5, Math.sqrt(n.conn) * 1.55);
+  n.anchor = (n.hop === 0);
+  n.ph = (i * 2.399963229728653) % (Math.PI * 2);   // wobble phase, stable per node
+});
+E.forEach(e => { N[e.s].adj.add(e.t); N[e.t].adj.add(e.s); });
+
+// Lightness carries depth: inner rings read brighter than the rim, so "how far
+// from what this realm is about" is legible before you read a single label.
+R.forEach(r => { if (r.centre) r.hue = 24; });   // the accent is reserved for home
+function nodeFill(n) {
+  if (n.dead) return null;                       // hollow — drawn as an outline
+  const deep = n.R.rings ? Math.min(1, n.hop / Math.max(1, n.R.rings)) : 0;
+  const sat = (n.R.centre ? 72 : 56) - deep * 22;
+  return "hsl(" + n.R.hue + "," + sat.toFixed(0) + "%," + (80 - deep * 40).toFixed(0) + "%)";
+}
+N.forEach(n => { n.fill = nodeFill(n); });
+
+// ---- camera ---------------------------------------------------------------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const tip = document.getElementById("tip");
+let scale = 1, tx = 0, ty = 0, dpr = 1;
+let tgtS = null, tgtX = 0, tgtY = 0;
+let baseS = 1, baseX = 0, baseY = 0;
+
+function bounds() {
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const r of R) {
+    x0 = Math.min(x0, r.x - r.rad); y0 = Math.min(y0, r.y - r.rad);
+    x1 = Math.max(x1, r.x + r.rad); y1 = Math.max(y1, r.y + r.rad);
+  }
+  return [x0, y0, x1, y1];
+}
+function fit() {
+  dpr = window.devicePixelRatio || 1;
+  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+  const [x0, y0, x1, y1] = bounds();
+  baseS = Math.min(innerWidth / (x1 - x0 + 420), innerHeight / (y1 - y0 + 300));
+  baseX = innerWidth / 2 - (x0 + x1) / 2 * baseS;
+  baseY = innerHeight / 2 - (y0 + y1) / 2 * baseS;
+  scale = baseS; tx = baseX; ty = baseY;
+}
+fit();
+addEventListener("resize", () => {
+  const [x0, y0, x1, y1] = bounds();
+  dpr = window.devicePixelRatio || 1;
+  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+  baseS = Math.min(innerWidth / (x1 - x0 + 420), innerHeight / (y1 - y0 + 300));
+  baseX = innerWidth / 2 - (x0 + x1) / 2 * baseS;
+  baseY = innerHeight / 2 - (y0 + y1) / 2 * baseS;
+});
+function flyTo(r, pad) {
+  tgtS = Math.min(2.2, Math.min(innerWidth, innerHeight) / (r.rad * 2 + (pad || 220)));
+  tgtX = innerWidth / 2 - r.x * tgtS;
+  tgtY = innerHeight / 2 - r.y * tgtS;
+}
+function flyOut() { tgtS = baseS; tgtX = baseX; tgtY = baseY; }
+
+// ---- level of detail ------------------------------------------------------
+// One world, one coordinate space, camera moves — so a galaxy is always in the
+// same place and you can build a memory of where things are. Detail is a
+// function of on-screen size alone; nothing is re-laid-out on navigation.
+const BLOB_PX = 44, FULL_PX = 78;
+function detail(r) {                                // 0 = blob, 1 = full grid
+  const px = r.rad * scale;
+  if (px <= BLOB_PX) return 0;
+  if (px >= FULL_PX) return 1;
+  return (px - BLOB_PX) / (FULL_PX - BLOB_PX);
+}
+
+// ---- motion: animation, never layout --------------------------------------
+// Springs pull each node to the slot the generator assigned. Dragging displaces
+// a node and letting go returns it. Nothing here can change where a node lives,
+// which is the whole difference from the force map.
+let settle = 1;
+N.forEach(n => {                                    // assemble on load, then hold
+  const a = n.ph, d = 90 + (n.i % 37) * 6;
+  n.x = n.hx + Math.cos(a) * d; n.y = n.hy + Math.sin(a) * d;
+});
+function stepSim(t) {
+  settle *= 0.995;
+  for (const n of N) {
+    if (n === dragNode) continue;
+    const wob = P.motion ? 1.15 : 0;
+    const hx = n.hx + Math.cos(t * 0.00021 + n.ph) * wob;
+    const hy = n.hy + Math.sin(t * 0.00017 + n.ph) * wob;
+    n.vx = (n.vx + (hx - n.x) * 0.055) * 0.86;
+    n.vy = (n.vy + (hy - n.y) * 0.055) * 0.86;
+    n.x += n.vx; n.y += n.vy;
+  }
+}
+
+// ---- draw -----------------------------------------------------------------
+function draw(t) {
+  stepSim(t);
+  if (tgtS !== null) {
+    scale += (tgtS - scale) * 0.07;
+    tx += (tgtX - tx) * 0.07; ty += (tgtY - ty) * 0.07;
+    if (Math.abs(tgtS - scale) / tgtS < 0.002) { scale = tgtS; tx = tgtX; ty = tgtY; tgtS = null; }
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#08080b"; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
+  const k = 1 / scale;                              // keep strokes screen-constant
+
+  // corridors first, under everything: realm to realm, weight by link count
+  for (const c of CORR) {
+    const a = realmOf.get(c.a), b = realmOf.get(c.b);
+    if (!a || !b) continue;
+    const hot = hoverRealm && (a === hoverRealm || b === hoverRealm);
+    ctx.strokeStyle = c.auth ? (hot ? "rgba(255,170,120,.75)" : "rgba(186,168,224,.38)")
+                             : "rgba(150,150,170,.14)";
+    ctx.lineWidth = (hot ? 2.2 : Math.min(3, 0.7 + c.n * 0.28)) * k;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    if (a.work !== b.work) {                        // a lock sits on the crossing
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      ctx.strokeStyle = "rgba(255,190,90,.75)"; ctx.lineWidth = 1.6 * k;
+      ctx.beginPath(); ctx.arc(mx, my, 7 * k, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(mx - 4 * k, my); ctx.lineTo(mx + 4 * k, my); ctx.stroke();
+    }
+  }
+
+  for (const r of R) {
+    const d = detail(r);
+    r.d = d;
+    if (P.glow) {                                   // the field: a soft well per galaxy
+      const g = ctx.createRadialGradient(r.x, r.y, r.rad * 0.15, r.x, r.y, r.rad * 1.25);
+      g.addColorStop(0, "hsla(" + r.hue + ",70%,60%," + (0.13 - d * 0.05).toFixed(3) + ")");
+      g.addColorStop(1, "hsla(" + r.hue + ",70%,60%,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(r.x, r.y, r.rad * 1.25, 0, 7); ctx.fill();
+    }
+    if (d > 0) {                                    // rim of the disc
+      ctx.globalAlpha = d;
+      ctx.strokeStyle = "hsla(" + r.hue + ",55%,62%,.42)";
+      ctx.lineWidth = 1.1 * k;
+      ctx.setLineDash([5 * k, 7 * k]);
+      ctx.beginPath(); ctx.arc(r.x, r.y, r.rad, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+      if (P.rings) {                                // one track per hop band
+        ctx.strokeStyle = "hsla(" + r.hue + ",45%,58%,.18)";
+        ctx.lineWidth = 1 * k;
+        for (const rr of r.hopR) {
+          if (rr < 6) continue;
+          ctx.beginPath(); ctx.arc(r.x, r.y, rr, 0, 7); ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // chords — the link graph, drawn but weightless
+  const hi = hoverNode ? hoverNode.i : -1;
+  for (const e of E) {
+    const a = N[e.s], b = N[e.t];
+    const d = Math.min(a.R.d, b.R.d);
+    if (d <= 0) continue;                           // both ends collapsed into blobs
+    if (e.g && !P.ghosts) continue;
+    const hot = e.s === hi || e.t === hi;
+    ctx.globalAlpha = hot ? 0.85 : d * (e.g ? 0.16 : P.chords);
+    ctx.strokeStyle = hot ? "#fff" : (e.g ? "#8f8fa8" : (e.b ? "#c39bf5" : "#9aa0b8"));
+    ctx.lineWidth = (hot ? 1.7 : 0.9) * k;
+    if (e.g) ctx.setLineDash([2 * k, 5 * k]); else ctx.setLineDash([]);
+    const cx = (a.R.x + b.R.x) / 2, cy = (a.R.y + b.R.y) / 2;
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const BEND = e.i ? 0.45 : 0.22;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y);
+    ctx.quadraticCurveTo(mx + (cx - mx) * BEND, my + (cy - my) * BEND, b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+
+  // nodes, or the blob that stands in for them
+  for (const r of R) {
+    if (r.d < 1) {                                  // zoomed out: one body per galaxy
+      // screen-constant so a galaxy stays readable at any zoom, but modest:
+      // a blob that grows in world units drags the whole fit out with it
+      const a = 1 - r.d, br = (Math.sqrt(r.n) * 2.3 + 4.5) / scale;
+      const rr = Math.min(br, r.rad * 0.9);
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "hsl(" + r.hue + ",60%," + (r.minor ? 46 : 64) + "%)";
+      ctx.beginPath(); ctx.arc(r.x, r.y, rr, 0, 7); ctx.fill();
+      if (r === hoverRealm) {
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.6 * k;
+        ctx.beginPath(); ctx.arc(r.x, r.y, rr + 5 * k, 0, 7); ctx.stroke();
+      }
+      r.blobR = rr;
+      ctx.globalAlpha = 1;
+    } else r.blobR = 0;
+    if (r.d <= 0) continue;
+    ctx.globalAlpha = r.d;
+    for (const n of r.members) {
+      const rr = n.rad * (n.anchor ? 1.7 : 1);
+      if (n.dead) {                                 // still terrain, just unlit
+        ctx.strokeStyle = ASH; ctx.lineWidth = 1.2 * k;
+        ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, 7); ctx.stroke();
+      } else {
+        ctx.fillStyle = n.fill;
+        ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, 7); ctx.fill();
+      }
+      if (n.gold && !n.dead) {                      // identity: a ring, not a repaint
+        ctx.strokeStyle = GOLD; ctx.lineWidth = 1.4 * k;
+        ctx.beginPath(); ctx.arc(n.x, n.y, rr + 2.4 * k, 0, 7); ctx.stroke();
+      }
+      if (n.anchor) {                               // what the realm is about
+        ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.lineWidth = 1.4 * k;
+        ctx.beginPath(); ctx.arc(n.x, n.y, rr + 4.5 * k, 0, 7); ctx.stroke();
+      }
+      if (n.chal) {                                 // doubt is a broken ring, not a deletion
+        ctx.strokeStyle = CHAL; ctx.lineWidth = 1.5 * k;
+        for (let s = 0; s < 3; s++) {
+          const a0 = s * 2.094 + 0.35;
+          ctx.beginPath(); ctx.arc(n.x, n.y, rr + 3 * k, a0, a0 + 1.25); ctx.stroke();
+        }
+      }
+      if (n === hoverNode) {
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.6 * k;
+        ctx.beginPath(); ctx.arc(n.x, n.y, rr + 6 * k, 0, 7); ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // labels last so nothing paints over them
+  ctx.textAlign = "center";
+  for (const r of R) {
+    if (!P.realmLabels) break;
+    const quiet = r.d <= 0 && r.minor && r !== hoverRealm;
+    if (quiet) continue;
+    const up = r.d > 0 ? r.rad + 16 * k : (r.blobR || 6) + 13 * k;
+    ctx.fillStyle = r.centre ? "rgba(255,150,80,.96)" : "hsla(" + r.hue + ",68%,76%,.9)";
+    ctx.font = "600 " + (r.d > 0 ? 14 : r.centre ? 13 : 11.5) * k + "px system-ui";
+    ctx.fillText(r.short, r.x, r.y - up);
+    if (r.d <= 0) {
+      ctx.fillStyle = "rgba(150,150,165,.65)";
+      ctx.font = (9.5 * k) + "px system-ui";
+      ctx.fillText(r.n + " notes", r.x, r.y + (r.blobR || 6) + 14 * k);
+    }
+  }
+  ctx.font = (11 / scale) + "px system-ui";
+  for (const r of R) {
+    if (r.d <= 0) continue;
+    ctx.globalAlpha = r.d;
+    for (const n of r.members) {
+      const near = hoverNode && (n === hoverNode || hoverNode.adj.has(n.i));
+      const show = P.noteLabels === "all" || near || n.anchor ||
+                   (P.noteLabels === "hubs" && n.conn >= 8);
+      if (!show) continue;
+      ctx.fillStyle = near ? "#fff" : n.anchor ? "rgba(235,235,242,.9)" : "rgba(190,190,202,.7)";
+      ctx.fillText(n.stem, n.x, n.y + n.rad * (n.anchor ? 1.7 : 1) + 12 / scale);
+    }
+    ctx.globalAlpha = 1;
+  }
+  requestAnimationFrame(draw);
+}
+
+// ---- interaction ----------------------------------------------------------
+let dragNode = null, panning = false, moved = 0, px = 0, py = 0;
+let hoverNode = null, hoverRealm = null;
+const world = ev => [(ev.clientX - tx) / scale, (ev.clientY - ty) / scale];
+function pick(ev) {
+  const [wx, wy] = world(ev);
+  let bn = null, bd = 1e9, br = null;
+  for (const r of R) {
+    const dr = Math.hypot(r.x - wx, r.y - wy);
+    if (r.d <= 0) {
+      if (dr < Math.max(r.blobR + 8 / scale, 14 / scale)) br = r;
+      continue;
+    }
+    if (dr > r.rad + 30) continue;
+    for (const n of r.members) {
+      const d = Math.hypot(n.x - wx, n.y - wy);
+      if (d < Math.max(n.rad + 5 / scale, 10 / scale) && d < bd) { bn = n; bd = d; }
+    }
+  }
+  return [bn, br];
+}
+cv.addEventListener("pointerdown", ev => {
+  cv.setPointerCapture(ev.pointerId); cv.classList.add("grabbing");
+  moved = 0; px = ev.clientX; py = ev.clientY;
+  dragNode = pick(ev)[0];
+  panning = !dragNode;
+  tgtS = null;
+});
+cv.addEventListener("pointermove", ev => {
+  moved += Math.abs(ev.clientX - px) + Math.abs(ev.clientY - py);
+  if (dragNode) {
+    const [wx, wy] = world(ev);
+    dragNode.x = wx; dragNode.y = wy; dragNode.vx = 0; dragNode.vy = 0;
+  } else if (panning) { tx += ev.clientX - px; ty += ev.clientY - py; }
+  px = ev.clientX; py = ev.clientY;
+  if (!dragNode && !panning) {
+    const [n, r] = pick(ev);
+    hoverNode = n; hoverRealm = n ? n.R : r;
+  }
+  if (hoverNode && !panning) {
+    const n = hoverNode;
+    tip.style.display = "block";
+    tip.style.left = Math.min(innerWidth - 350, ev.clientX + 14) + "px";
+    tip.style.top = (ev.clientY + 16) + "px";
+    tip.innerHTML = "<b>" + n.stem + "</b><br>" + n.short +
+      " &middot; ring " + n.hop + (n.anchor ? " (anchor)" : "") + "<br>" +
+      n.conn + " links, " + n.deg + " authored inbound" +
+      (n.gold ? "<br>identity note" : "") +
+      (n.dead ? "<br><span style='color:#8a8a96'>EXPIRED — history, not current</span>" : "") +
+      (n.chal ? "<br><span style='color:#ff5d3d'>" + n.chal + " open challenge(s)</span>" : "");
+  } else tip.style.display = "none";
+});
+cv.addEventListener("pointerup", ev => {
+  cv.classList.remove("grabbing");
+  if (moved < 5) {
+    const [n, r] = pick(ev);
+    if (n) {
+      // absolute path, not vault+file: an unresolvable file= makes Obsidian
+      // create an empty note at the vault root instead of opening anything
+      location.href = "obsidian://open?path=" +
+        encodeURIComponent(DATA.root + "/" + n.realm + "/memory/" + n.stem + ".md");
+    } else if (r) flyTo(r);
+  }
+  dragNode = null; panning = false;
+});
+cv.addEventListener("wheel", ev => {
+  ev.preventDefault(); tgtS = null;
+  const f = Math.exp(-ev.deltaY * 0.0016);
+  const [wx, wy] = world(ev);
+  scale = Math.max(baseS * 0.35, Math.min(6, scale * f));
+  tx = ev.clientX - wx * scale; ty = ev.clientY - wy * scale;
+}, { passive: false });
+cv.addEventListener("dblclick", () => flyOut());
+
+// ---- panels ---------------------------------------------------------------
+const disp = document.getElementById("disp");
+function toggle(key, name) {
+  const l = document.createElement("label");
+  l.innerHTML = "<span>" + name + "</span><input type=checkbox>";
+  const b = l.querySelector("input");
+  b.checked = P[key];
+  b.addEventListener("change", () => { P[key] = b.checked; save(); });
+  disp.appendChild(l); return b;
+}
+const gb = toggle("ghosts", "ghost chords");
+const rb2 = toggle("rings", "hop rings");
+const rl = toggle("realmLabels", "galaxy labels");
+const gl = toggle("glow", "field glow");
+const mo = toggle("motion", "drift");
+const cl = document.createElement("label");
+cl.innerHTML = "<span>chord alpha</span><input type=range min=0 max=.8 step=.02><span class=val></span>";
+const ci = cl.querySelector("input"), cvv = cl.querySelector(".val");
+ci.value = P.chords; cvv.textContent = (+P.chords).toFixed(2);
+ci.addEventListener("input", () => { P.chords = +ci.value; cvv.textContent = P.chords.toFixed(2); save(); });
+disp.appendChild(cl);
+const nl = document.createElement("label");
+nl.innerHTML = "<span>note labels</span><select>" +
+  ["hover", "hubs", "all"].map(m => "<option value=" + m + ">" + m + "</option>").join("") + "</select>";
+const ns = nl.querySelector("select");
+ns.value = P.noteLabels;
+ns.addEventListener("change", () => { P.noteLabels = ns.value; save(); });
+disp.appendChild(nl);
+const rst = document.createElement("button");
+rst.textContent = "reset view";
+rst.addEventListener("click", () => { flyOut(); });
+disp.appendChild(rst);
+
+const jump = document.getElementById("jump");
+[...R].sort((a, b) => b.n - a.n).forEach(r => {
+  const b = document.createElement("button");
+  b.textContent = r.short + "  (" + r.n + ")";
+  b.style.textAlign = "left";
+  b.style.borderLeft = "3px solid hsl(" + r.hue + ",60%,55%)";
+  b.addEventListener("click", () => flyTo(r));
+  jump.appendChild(b);
+});
+
+// ---- hud ------------------------------------------------------------------
+const why = { cwd: "entered from this working directory", flag: "centred as asked",
+              empty: "this project has no notes yet — showing the largest realm",
+              largest: "largest realm — this cwd has no vault realm" }[DATA.centre_from];
+document.getElementById("hud-t").textContent = DATA.centre_short;
+document.getElementById("hud-s").innerHTML =
+  why + " &middot; <em>" + N.length + "</em> notes &middot; <em>" + R.length + "</em> galaxies";
+
+// ---- ambient tour ---------------------------------------------------------
+if (AMBIENT) {
+  const tour = [...R].sort((a, b) => b.n - a.n).filter(r => !r.minor);
+  let i = -1;
+  setInterval(() => {
+    i++;
+    if (i % (tour.length + 1) === tour.length) { hoverNode = null; flyOut(); }
+    else flyTo(tour[i % (tour.length + 1)]);
+  }, 16000);
+  flyOut();
+}
+
+requestAnimationFrame(draw);
+</script></body></html>
