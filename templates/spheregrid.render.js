@@ -60,7 +60,8 @@ function glowSprite(col) {
 // Ghosts default OFF. An inferred link is vocabulary overlap, and drawing it at
 // the same weight as something you wrote is how machine echo starts looking
 // like corroboration.
-const DEFAULTS = { ghosts: false, lattice: true, tokens: true, chords: 0.17, realmLabels: true,
+const DEFAULTS = { ghosts: false, lattice: true, tokens: true, chords: 0.17,
+                   treeChords: 0.06, realmLabels: true,
                    noteLabels: "auto", glow: true, motion: true };
 const P = { ...DEFAULTS };
 try { Object.assign(P, JSON.parse(store.get() || "{}")); } catch (e) {}
@@ -87,6 +88,7 @@ E.forEach(e => { N[e.s].adj.add(e.t); N[e.t].adj.add(e.s); });
 // because it is the thing that knows which type a note declared.
 
 R.forEach(r => { if (r.centre) r.hue = 24; });   // the accent is reserved for home
+const TREE = N.some(n => n.par >= 0);   // tree layout emits parents
 R.forEach(r => { r.chord = "hsl(" + r.hue + ",42%,74%)"; });   // built once, not per edge per frame
 
 // Lightness carries depth: notes near the anchor read brighter than the rim, so
@@ -410,6 +412,25 @@ function draw(t) {
       }
       ctx.stroke();
     }
+    // Under the tree layout the track is the parent edge — this note was
+    // reached through that one — which is the first version of this line with a
+    // rule you can check by hovering. Drawn in the same steel as the pod track,
+    // because it is the same kind of thing: structure, never data.
+    if (TREE) {
+      for (const r of R) {
+        if (r.d <= 0 || !r.vis) continue;
+        ctx.globalAlpha = r.d * dim(r) * (hoverNode ? 0.28 : 1);
+        ctx.strokeStyle = "#8f97ac";
+        ctx.lineWidth = 1.5 * k;
+        ctx.beginPath();
+        for (const n of r.members) {
+          if (n.par < 0) continue;
+          const p = N[n.par];
+          ctx.moveTo(p.x, p.y); ctx.lineTo(n.x, n.y);
+        }
+        ctx.stroke();
+      }
+    }
     ctx.globalAlpha = 1;
   }
 
@@ -421,7 +442,8 @@ function draw(t) {
     if (d <= 0 || (!a.R.vis && !b.R.vis)) continue;
     if (e.g && !P.ghosts) continue;
     const hot = e.s === hi || e.t === hi;
-    ctx.globalAlpha = (hot ? 0.9 : d * (e.g ? 0.16 : P.chords * (hoverNode ? 0.5 : 1)))
+    const chordA = TREE ? P.treeChords : P.chords;
+    ctx.globalAlpha = (hot ? 0.9 : d * (e.g ? 0.16 : chordA * (hoverNode ? 0.5 : 1)))
                     * Math.max(dim(a.R), dim(b.R));
     ctx.strokeStyle = hot ? "#fff"
       : e.g ? "#8f8fa8"
