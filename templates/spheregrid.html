@@ -42,6 +42,7 @@ html,body{margin:0;height:100%;background:#05060a;overflow:hidden;
  <span class="sw" style="background:none;border:1px solid #ff5d3d;width:7px;height:7px"></span>open challenge on a claim<br>
  <span class="sw" style="background:#e8e8ef"></span>anchor — what the realm is about<br>
  <span style="color:#7d8496">steel</span> = track (structure, never lights up) &middot; tinted curve = a link<br>
+ the glyph on a node is its type &middot; diamond project &middot; chevrons feedback &middot; brackets reference &middot; ring user<br>
  each ring is one pod of up to six notes of one type &middot; chains fan from the anchor<br>
  scroll to zoom &middot; drag to pan &middot; click a galaxy to focus it<br>
  Esc or click the void to back out &middot; click a note to open it in Obsidian
@@ -89,6 +90,7 @@ function toggle(key, name) {
 }
 const gb = toggle("ghosts", "ghost chords");
 const lt = toggle("lattice", "pod track");
+const tk = toggle("tokens", "type tokens");
 const rl = toggle("realmLabels", "galaxy labels");
 const gl = toggle("glow", "field glow");
 const mo = toggle("motion", "drift");
@@ -140,5 +142,4 @@ if (AMBIENT) {
   flyOut();
 }
 
-requestAnimationFrame(draw);
 </script></body></html>

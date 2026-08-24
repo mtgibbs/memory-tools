@@ -60,7 +60,7 @@ function glowSprite(col) {
 // Ghosts default OFF. An inferred link is vocabulary overlap, and drawing it at
 // the same weight as something you wrote is how machine echo starts looking
 // like corroboration.
-const DEFAULTS = { ghosts: false, lattice: true, chords: 0.17, realmLabels: true,
+const DEFAULTS = { ghosts: false, lattice: true, tokens: true, chords: 0.17, realmLabels: true,
                    noteLabels: "auto", glow: true, motion: true };
 const P = { ...DEFAULTS };
 try { Object.assign(P, JSON.parse(store.get() || "{}")); } catch (e) {}
@@ -98,8 +98,19 @@ function nodeFill(n) {
   const sat = (n.R.centre ? 78 : 64) - deep * 10;
   return "hsl(" + n.R.hue + "," + sat.toFixed(0) + "%," + (76 - deep * 22).toFixed(0) + "%)";
 }
+// FFX spends the token face on KIND. Our five other channels were already
+// spoken for — hue is the realm, lightness the hop depth, size the degree,
+// position the type, rings the state — so the face was the only one left, and
+// putting type there means a note says what it IS even out of its pod: hovered,
+// searched, dragged loose.
+const GLYPH = { project: "diamond", feedback: "chevrons", reference: "brackets",
+                user: "ring", other: "dot" };
 N.forEach(n => {
   n.fill = nodeFill(n);
+  const deep = n.R.rings ? Math.min(1, n.hop / Math.max(1, n.R.rings)) : 0;
+  n.deep = "hsl(" + n.R.hue + "," + ((n.R.centre ? 64 : 50) - deep * 10).toFixed(0)
+         + "%," + (54 - deep * 16).toFixed(0) + "%)";
+  n.glyph = GLYPH[n.type] || "dot";
   // bloom takes a saturated, darker colour than the body — blooming the body's
   // near-white is what turned the map into fog the first time
   n.glow = n.gold ? "hsl(44,92%,52%)" : "hsl(" + n.R.hue + ",88%,52%)";
@@ -115,6 +126,54 @@ const SIDES = (() => {
   };
   return [{ ...mid(p), label: "PERSONAL" }, { ...mid(w), label: "WORK" }];
 })();
+
+// Glyphs are drawn from the node's own radius so they scale with the size
+// channel instead of fighting it. Stroke-based on purpose: a filled glyph on a
+// dark inset face turns into a blob two zoom steps out.
+function drawGlyph(ctx, kind, x, y, r, col, k) {
+  const w = Math.max(0.9 * k, r * 0.15);
+  ctx.strokeStyle = col;
+  ctx.fillStyle = col;
+  ctx.lineWidth = w;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  const a = r * 0.60;
+  ctx.beginPath();
+  if (kind === "diamond") {
+    ctx.moveTo(x, y - a); ctx.lineTo(x + a, y); ctx.lineTo(x, y + a); ctx.lineTo(x - a, y);
+    ctx.closePath(); ctx.stroke();
+  } else if (kind === "chevrons") {
+    const c = r * 0.42;
+    ctx.moveTo(x - c, y - c); ctx.lineTo(x, y); ctx.lineTo(x - c, y + c);
+    ctx.moveTo(x + c, y - c); ctx.lineTo(x, y); ctx.lineTo(x + c, y + c);
+    ctx.stroke();
+  } else if (kind === "brackets") {
+    const bx = r * 0.46, by = r * 0.52, lip = r * 0.22;
+    ctx.moveTo(x - bx + lip, y - by); ctx.lineTo(x - bx, y - by);
+    ctx.lineTo(x - bx, y + by); ctx.lineTo(x - bx + lip, y + by);
+    ctx.moveTo(x + bx - lip, y - by); ctx.lineTo(x + bx, y - by);
+    ctx.lineTo(x + bx, y + by); ctx.lineTo(x + bx - lip, y + by);
+    ctx.stroke();
+  } else if (kind === "ring") {
+    ctx.arc(x, y, r * 0.44, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y, Math.max(0.7 * k, r * 0.13), 0, 7); ctx.fill();
+  } else {
+    ctx.arc(x, y, Math.max(0.9 * k, r * 0.20), 0, 7); ctx.fill();
+  }
+}
+
+// A regular octagon, vertex up, circumradius r. Slightly larger than the bead it
+// replaces because an octagon of the same circumradius carries visibly less area,
+// and the size channel has to keep meaning the same thing across both.
+function octagon(ctx, x, y, r) {
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const th = (Math.PI * 2 * i) / 8 - Math.PI / 2;
+    const px = x + Math.cos(th) * r, py = y + Math.sin(th) * r;
+    if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+  }
+  ctx.closePath();
+}
 
 // ---- camera ---------------------------------------------------------------
 const cv = opts.canvas, ctx = cv.getContext("2d");
@@ -196,6 +255,7 @@ function flyOut() { tgtS = baseS; tgtX = baseX; tgtY = baseY; }
 // you zoom in is answering a question this corpus does not ask. Blobs are the
 // graceful degradation for zooming far out, not the resting state.
 const BLOB_PX = 13, FULL_PX = 26;
+const TOKEN_R = 1.1;                                // octagon circumradius / bead radius
 function detail(r) {                                // 0 = blob, 1 = full grid
   const px = r.rad * scale;
   if (px <= BLOB_PX) return 0;
@@ -400,11 +460,29 @@ function draw(t) {
     ctx.globalAlpha = r.d * dim(r);
     for (const n of r.members) {
       const rr = n.rad * (n.anchor ? 1.7 : 1);
+      const px = rr * scale;                      // how big this node really is
+      // Below about nine pixels the facets and the glyph both collapse into
+      // noise, so the token degrades to the bead rather than to mush. That is
+      // the cost of this treatment, paid here: two node bodies to keep in step.
+      const token = P.tokens && px >= 9;
       if (n.dead) {                                 // still terrain, just unlit
         ctx.strokeStyle = ASH; ctx.lineWidth = 1.2 * k;
-        ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, 7); ctx.stroke();
+        if (token) { octagon(ctx, n.x, n.y, rr * TOKEN_R); ctx.stroke(); }
+        else { ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, 7); ctx.stroke(); }
+      } else if (token) {
+        if (P.glow) {
+          const G = rr * (n.anchor ? 3.6 : 2.7);
+          ctx.drawImage(glowSprite(n.glow), n.x - G, n.y - G, G * 2, G * 2);
+        }
+        const R = rr * TOKEN_R;
+        ctx.fillStyle = n.deep;
+        octagon(ctx, n.x, n.y, R); ctx.fill();
+        ctx.strokeStyle = n.fill; ctx.lineWidth = Math.max(0.9 * k, R * 0.11);
+        ctx.lineJoin = "round"; ctx.stroke();
+        ctx.fillStyle = "rgba(7,8,13,.62)";          // the inset face
+        octagon(ctx, n.x, n.y, R * 0.80); ctx.fill();
+        drawGlyph(ctx, n.glyph, n.x, n.y, R, n.fill, k);
       } else {
-        const px = rr * scale;                    // how big this bead actually is
         if (P.glow && px > 2.2) {                   // it emits before it exists
           const G = rr * (n.anchor ? 3.6 : 2.7);
           ctx.drawImage(glowSprite(n.glow), n.x - G, n.y - G, G * 2, G * 2);
