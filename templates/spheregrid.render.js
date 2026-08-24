@@ -658,7 +658,10 @@ function pick(ev) {
     if (r.d <= 0 || dr > r.rad + 30) continue;
     for (const n of r.members) {
       const d = Math.hypot(n.x - wx, n.y - wy);
-      const hit = Math.max(n.rad * (n.anchor ? 1.7 : 1) + 4 / scale, 9 / scale);
+      // a token draws to 1.1x the bead's radius, so the hit area follows it —
+      // otherwise the corners of a shape you can see are not clickable
+      const drawn = n.rad * (n.anchor ? 1.7 : 1) * (P.tokens ? TOKEN_R : 1);
+      const hit = Math.max(drawn + 4 / scale, 9 / scale);
       if (d < hit && d < bd) { bn = n; bd = d; }
     }
   }
