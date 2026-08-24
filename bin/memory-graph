@@ -665,6 +665,49 @@ def cmd_where(g: Graph, a) -> dict:
     return out
 
 
+def _accrete_pods(g: Graph, members: list[str], size: int) -> list[list[str]]:
+    """Grow pods by admission, so being on a ring means something checkable.
+
+    The rule: **a note joins a pod because it links to a note already in that
+    pod.** Nothing else gets you on a ring. A pod starts at the best-connected
+    unplaced note and repeatedly admits whichever unplaced note has the most
+    links into the pod so far; when no candidate has even one, the pod closes
+    short rather than padding itself with strangers.
+
+    That is the property the drawn ring was quietly claiming and did not have.
+    Grouping by type gave a ring a weak but true meaning — same type — which the
+    glyph now says anyway. Grouping by community gave it none you could check:
+    label propagation puts notes on a ring that share no edge, and in a realm
+    whose 76 notes form one connected component of 71, six arbitrary members of
+    that component will not link to each other. Hovering one lit nothing,
+    correctly, and the ring was the thing that lied.
+
+    Notes with no link into any pod come back as pods of one, drawn without a
+    ring, because there is nothing to enclose.
+    """
+    scope = set(members)
+    adj = {m: (g.undirected(m) & scope) for m in members}
+    left = set(members)
+    pods: list[list[str]] = []
+    while left:
+        seed = min(left, key=lambda m: (-len(adj[m] & left), m))
+        left.discard(seed)
+        pod = [seed]
+        while len(pod) < size:
+            inpod = set(pod)
+            best, score = None, 0
+            for c in sorted(left):
+                hits = len(adj[c] & inpod)
+                if hits > score:
+                    best, score = c, hits
+            if best is None:
+                break                       # nobody left links in — close it short
+            left.discard(best)
+            pod.append(best)
+        pods.append(pod)
+    return pods
+
+
 def _clusters(g: Graph, members: list[str]) -> dict[str, str]:
     """Group a realm's notes by who they actually link to.
 
@@ -859,6 +902,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
     pos: dict[str, tuple[float, float]] = {}
     hop_of: dict[str, int] = {}
     spiral_of: dict[str, int] = {}   # position along the realm's spiral
+    pod_of: dict[str, int] = {}      # which pod, so membership is checkable
     realms_out: list[dict] = []
     for realm, members in sorted(by_realm.items()):
         mset = set(members)
@@ -886,14 +930,42 @@ def cmd_spheregrid(g: Graph, a) -> dict:
         spiral_of[anchor] = 0
 
         chains: list[tuple[str, list[list[str]]]] = []
-        # By type the sector order is fixed and meaningful; by cluster it is
-        # whatever the graph produced, so biggest first and name to break ties.
-        keys = TYPE_ORDER if a.group == "type" else sorted(
-            groups, key=lambda k: (-len(groups[k]), k))
-        for key in keys:
-            ms = _cohesion_order(g, sorted(groups.get(key, [])))
-            if ms:
-                chains.append((key, [ms[i:i + POD] for i in range(0, len(ms), POD)]))
+        if a.group == "linked":
+            built = _accrete_pods(g, sorted(m for m in members if m != anchor), POD)
+            # A chain should be a chain. Order pods by walking pod-to-pod links —
+            # start at the largest, then repeatedly take whichever unplaced pod
+            # shares the most links with the one just placed — so a spoke joins
+            # pods that actually reference each other instead of joining pod 4 to
+            # pod 5 because 4 < 5.
+            idx_of = {m: i for i, pod in enumerate(built) for m in pod}
+            plink: dict[tuple[int, int], int] = defaultdict(int)
+            for m in idx_of:
+                for o in g.undirected(m):
+                    if o in idx_of and idx_of[o] != idx_of[m]:
+                        plink[(min(idx_of[m], idx_of[o]), max(idx_of[m], idx_of[o]))] += 1
+            def weight(x: int, y: int) -> int:
+                return plink.get((min(x, y), max(x, y)), 0)
+            left = set(range(len(built)))
+            order: list[int] = []
+            while left:
+                if order:
+                    nxt = min(left, key=lambda k: (-weight(order[-1], k), -len(built[k]), built[k][0]))
+                    if weight(order[-1], nxt) == 0:
+                        nxt = min(left, key=lambda k: (-len(built[k]), built[k][0]))
+                else:
+                    nxt = min(left, key=lambda k: (-len(built[k]), built[k][0]))
+                left.discard(nxt)
+                order.append(nxt)
+            chains.append(("linked", [built[k] for k in order]))
+        else:
+            # By type the sector order is fixed and meaningful; by cluster it is
+            # whatever the graph produced, so biggest first, name to break ties.
+            keys = TYPE_ORDER if a.group == "type" else sorted(
+                groups, key=lambda k: (-len(groups[k]), k))
+            for key in keys:
+                ms = _cohesion_order(g, sorted(groups.get(key, [])))
+                if ms:
+                    chains.append((key, [ms[i:i + POD] for i in range(0, len(ms), POD)]))
         total_pods = sum(len(c) for _, c in chains) or 1
         # The first ring has to clear its neighbours, and how far out that is
         # depends on how many groups share the circle. Fixed at 96 it left a
@@ -937,6 +1009,8 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                         spiral_of[m] = rank
                         rank += 1
                     k = len(pods)
+                    for m in pod:
+                        pod_of[m] = k
                     pods.append({"x": round(cx, 2), "y": round(cy, 2),
                                  "r": round(pr, 2), "n": len(pod), "t": key or "other"})
                     pod_links.append([-1, k] if k == first_in_group else [k - 1, k])
@@ -1013,6 +1087,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                           "dead": node in g.status,
                           "chal": len(g.challenged.get(node, [])),
                           "hop": hop_of[node], "si": spiral_of[node],
+                          "pod": pod_of.get(node, -1),
                           "type": type_of[node] or "other",
                           "deg": sum(1 for _, p in g.inn[node] if p == "authored"),
                           "conn": len(g.undirected(node)),
@@ -1036,6 +1111,16 @@ def cmd_spheregrid(g: Graph, a) -> dict:
             if prov == "authored":
                 e["g"] = 0
     edges = list(pairs.values())
+    # conn is what the tooltip reports, so it has to mean links you can find.
+    # g.undirected() counts targets this map excludes — every realm's MEMORY.md
+    # among them — so a node could read "3 links" with two edges on screen and
+    # send you hunting for one that was never drawn.
+    degree = [0] * len(nodes)
+    for e in edges:
+        degree[e["s"]] += 1
+        degree[e["t"]] += 1
+    for i, n in enumerate(nodes):
+        n["conn"] = degree[i]
 
     data = json.dumps({"vault": g.vault.name, "root": str(g.vault),
                        "centre": centre_realm, "centre_short": short(centre_realm),
@@ -1224,10 +1309,12 @@ def main() -> int:
                         "(what the Obsidian plugin renders)")
     p.add_argument("--center", default="auto",
                    help="realm at the origin: a realm slug/substring, or 'auto' (this cwd)")
-    p.add_argument("--group", choices=("type", "cluster"), default="type",
+    p.add_argument("--group", choices=("type", "cluster", "linked"), default="type",
                    help="what a pod holds: notes of one TYPE, or notes that link "
-                        "to each other (CLUSTER). Type is readable from the glyph "
-                        "either way")
+                        "to each other by a heuristic (CLUSTER), or notes each "
+                        "admitted because they link to one already there (LINKED — "
+                        "the only one whose drawn ring means something checkable). "
+                        "Type is readable from the glyph in all three")
     p.add_argument("--min-galaxy", type=int, default=4,
                    help="realms under this many notes render as minor, not their own galaxy")
 

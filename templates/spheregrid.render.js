@@ -457,8 +457,15 @@ function draw(t) {
       ctx.globalAlpha = 1;
     } else r.blobR = 0;
     if (r.d <= 0) continue;
-    ctx.globalAlpha = r.d * dim(r);
     for (const n of r.members) {
+      // Hovering used to brighten the chords and leave every node lit, so a ring
+      // of pod-mates looked exactly as involved as the nodes actually linked to.
+      // Sitting in the same pod is not a link — in a realm whose 76 notes are one
+      // connected component of 71, six neighbours on a ring will not all link to
+      // each other, and the ring never claimed they did. Now the unrelated ones
+      // step back and the answer to "what connects these?" is visible: nothing.
+      const lit = !hoverNode || n === hoverNode || hoverNode.adj.has(n.i);
+      ctx.globalAlpha = r.d * dim(r) * (lit ? 1 : 0.22);
       const rr = n.rad * (n.anchor ? 1.7 : 1);
       const px = rr * scale;                      // how big this node really is
       // Below about nine pixels the facets and the glyph both collapse into
