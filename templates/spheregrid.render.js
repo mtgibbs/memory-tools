@@ -65,7 +65,7 @@ const DEFAULTS = { ghosts: false, lattice: true, tokens: true, chords: 0.17,
                    noteLabels: "auto", glow: true, motion: true };
 const P = { ...DEFAULTS };
 try { Object.assign(P, JSON.parse(store.get() || "{}")); } catch (e) {}
-const save = () => store.set(JSON.stringify(P));
+const save = () => { invalidate(); store.set(JSON.stringify(P)); };
 
 // ---- index ----------------------------------------------------------------
 const realmOf = new Map(R.map(r => [r.name, r]));
@@ -230,6 +230,7 @@ if (!fit()) {
 // anything. Until the user moves the camera themselves, it stays fitted.
 let userMoved = false;
 const onResize = () => {
+  invalidate();
   measure();
   if (!userMoved || !(scale > 0)) fit();
 };
@@ -239,13 +240,14 @@ const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) 
 if (ro) ro.observe(cv);
 function flyTo(r, pad) {
   userMoved = true;
+  invalidate();
   // the old 2.2 ceiling meant a twelve-note galaxy still sat small in the frame
   // after you asked to go into it, which is most of why zoom felt inert
   tgtS = Math.min(7, Math.min(vw, vh) / (r.rad * 2 + (pad || 220)));
   tgtX = vw / 2 - r.x * tgtS;
   tgtY = vh / 2 - r.y * tgtS;
 }
-function flyOut() { tgtS = baseS; tgtX = baseX; tgtY = baseY; }
+function flyOut() { tgtS = baseS; tgtX = baseX; tgtY = baseY; invalidate(); }
 
 // ---- level of detail ------------------------------------------------------
 // One world, one coordinate space, camera moves — so a galaxy is always in the
@@ -269,6 +271,21 @@ function detail(r) {                                // 0 = blob, 1 = full grid
 // Springs pull each node to the slot the generator assigned. Dragging displaces
 // a node and letting go returns it. Nothing here can change where a node lives,
 // which is the whole difference from the force map.
+// The map redrew sixty times a second forever, including when nothing at all
+// was happening — a static view left open in a pane burned a core to paint the
+// same pixels. Now a frame is only drawn if something asked for one: a pointer,
+// the camera still flying, springs still settling, or drift switched on (which
+// is a choice to animate, and says so by never going idle).
+let dirty = true, restFrames = 0;
+function invalidate() { dirty = true; restFrames = 0; }
+function atRest() {
+  if (tgtS !== null || dragNode || panning || P.motion) return false;
+  for (const n of N) {
+    if (Math.abs(n.x - n.hx) > 0.05 || Math.abs(n.y - n.hy) > 0.05) return false;
+    if (Math.abs(n.vx) > 0.02 || Math.abs(n.vy) > 0.02) return false;
+  }
+  return true;
+}
 let settle = 1;
 N.forEach(n => {                                    // assemble on load, then hold
   const a = n.ph, d = 90 + (n.i % 37) * 6;
@@ -290,6 +307,12 @@ function stepSim(t) {
 // ---- draw -----------------------------------------------------------------
 function draw(t) {
   if (!(scale > 0)) fit();                          // never render into a dead camera
+  if (!opts.still) {
+    if (!dirty && atRest()) {
+      if (++restFrames > 2) { requestAnimationFrame(draw); return; }
+    } else restFrames = 0;
+    dirty = false;
+  }
   stepSim(t);
   if (tgtS !== null) {
     scale += (tgtS - scale) * 0.07;
@@ -407,6 +430,7 @@ function draw(t) {
       ctx.beginPath();
       for (const pod of r.pods) {
         if (pod.r < 2) continue;
+        if (!onScreen(r.x + pod.x, r.y + pod.y, pod.r + 8 * k)) continue;
         ctx.moveTo(r.x + pod.x + pod.r, r.y + pod.y);
         ctx.arc(r.x + pod.x, r.y + pod.y, pod.r, 0, 7);
       }
@@ -419,13 +443,19 @@ function draw(t) {
     if (TREE) {
       for (const r of R) {
         if (r.d <= 0 || !r.vis) continue;
-        ctx.globalAlpha = r.d * dim(r) * (hoverNode ? 0.28 : 1);
+        // Track weight follows the realm's on-screen size. At full strength it
+        // stayed a hard white spike while the nodes it connects shrank to
+        // nothing, so the fitted view was all skeleton and no stars.
+        const px = r.rad * scale;
+        const near = Math.max(0, Math.min(1, (px - 60) / 220));
+        ctx.globalAlpha = r.d * dim(r) * (hoverNode ? 0.28 : 1) * (0.22 + 0.68 * near);
         ctx.strokeStyle = "#8f97ac";
-        ctx.lineWidth = 1.5 * k;
+        ctx.lineWidth = (0.7 + 0.9 * near) * k;
         ctx.beginPath();
         for (const n of r.members) {
           if (n.par < 0) continue;
           const p = N[n.par];
+          if (!onScreen(n.x, n.y, 8 * k) && !onScreen(p.x, p.y, 8 * k)) continue;
           ctx.moveTo(p.x, p.y); ctx.lineTo(n.x, n.y);
         }
         ctx.stroke();
@@ -436,10 +466,12 @@ function draw(t) {
 
   // chords — the link graph, drawn but weightless
   const hi = hoverNode ? hoverNode.i : -1;
+  let dashed = -1;
   for (const e of E) {
     const a = N[e.s], b = N[e.t];
     const d = Math.min(a.R.d, b.R.d);
     if (d <= 0 || (!a.R.vis && !b.R.vis)) continue;
+    if (!onScreen(a.x, a.y, 8 * k) && !onScreen(b.x, b.y, 8 * k)) continue;
     if (e.g && !P.ghosts) continue;
     const hot = e.s === hi || e.t === hi;
     const chordA = TREE ? P.treeChords : P.chords;
@@ -450,7 +482,7 @@ function draw(t) {
       : e.b ? "#c39bf5"
       : a.R.chord;
     ctx.lineWidth = (hot ? 1.7 : 0.9) * k;
-    if (e.g) ctx.setLineDash([2 * k, 5 * k]); else ctx.setLineDash([]);
+    if (e.g !== dashed) { ctx.setLineDash(e.g ? [2 * k, 5 * k] : []); dashed = e.g; }
     const cx = (a.R.x + b.R.x) / 2, cy = (a.R.y + b.R.y) / 2;
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
     const BEND = e.i ? 0.45 : 0.22;
@@ -480,6 +512,7 @@ function draw(t) {
     } else r.blobR = 0;
     if (r.d <= 0) continue;
     for (const n of r.members) {
+      if (!onScreen(n.x, n.y, n.rad * 4 + 16 * k)) continue;
       // Hovering used to brighten the chords and leave every node lit, so a ring
       // of pod-mates looked exactly as involved as the nodes actually linked to.
       // Sitting in the same pod is not a link — in a realm whose 76 notes are one
@@ -603,6 +636,7 @@ function draw(t) {
   for (const r of R) {
     if (r.d <= 0 || !r.vis) continue;
     for (const n of r.members) {
+      if (!onScreen(n.x, n.y, 60 * k)) continue;
       const near = hoverNode && (n === hoverNode || hoverNode.adj.has(n.i));
       const show = tier === "all" || near || n.anchor || r === focusRealm ||
                    (tier === "hubs" && n.conn >= 8);
@@ -666,6 +700,7 @@ let hoverNode = null, hoverRealm = null, focusRealm = null;
 const dim = r => (!focusRealm || r === focusRealm) ? 1 : 0.16;
 function setFocus(r) {
   focusRealm = r;
+  invalidate();
   if (r) flyTo(r, 90); else flyOut();
 }
 const onKey = ev => { if (ev.key === "Escape") setFocus(null); };
@@ -697,6 +732,7 @@ function pick(ev) {
   return [bn, br];
 }
 cv.addEventListener("pointerdown", ev => {
+  invalidate();
   try { cv.setPointerCapture(ev.pointerId); } catch (e) {}
   cv.classList.add("grabbing");
   moved = 0; px = lx(ev); py = ly(ev);
@@ -705,6 +741,7 @@ cv.addEventListener("pointerdown", ev => {
   tgtS = null;
 });
 cv.addEventListener("pointermove", ev => {
+  invalidate();
   const cx = lx(ev), cy = ly(ev);
   moved += Math.abs(cx - px) + Math.abs(cy - py);
   if (dragNode) {
@@ -730,6 +767,7 @@ cv.addEventListener("pointermove", ev => {
   } else if (tip) tip.style.display = "none";
 });
 cv.addEventListener("pointerup", ev => {
+  invalidate();
   cv.classList.remove("grabbing");
   if (moved < 5) {
     const [n, r] = pick(ev);
@@ -742,7 +780,7 @@ cv.addEventListener("pointerup", ev => {
   dragNode = null; panning = false;
 });
 cv.addEventListener("wheel", ev => {
-  ev.preventDefault(); tgtS = null; userMoved = true;
+  ev.preventDefault(); tgtS = null; userMoved = true; invalidate();
   const f = Math.exp(-ev.deltaY * 0.0016);
   const [wx, wy] = world(ev);
   scale = Math.max(baseS * 0.35, Math.min(6, scale * f));
@@ -763,11 +801,12 @@ return {
    *  test, a screenshot, a "reset layout" — should not have to wait for it. */
   settleNow() {
     for (const n of N) { n.x = n.hx; n.y = n.hy; n.vx = 0; n.vy = 0; }
+    invalidate();
   },
   /** Draw exactly one frame. pick() reads per-realm detail and visibility that
    *  only draw() sets, so anything testing hit behaviour without an animation
    *  loop needs a way to produce that state deliberately. */
-  renderOnce(t) { draw(t || 0); },
+  renderOnce(t) { invalidate(); draw(t || 0); },
   screenOf: n => ({ x: n.x * scale + tx, y: n.y * scale + ty }),
   worldOf: (cx, cy) => ({ x: (cx - tx) / scale, y: (cy - ty) / scale }),
   get focusRealm() { return focusRealm; },
