@@ -137,7 +137,7 @@ def main() -> int:
         proc = subprocess.Popen(
             [CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars",
              "--window-size=1400,760", "--virtual-time-budget=4000",
-             f"--screenshot={out}", f"--user-data-dir={tmp}/cp", html.as_uri()],
+             f"--screenshot={out}", f"--user-data-dir={tmp}/profile", html.as_uri()],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             size = -1
@@ -157,7 +157,9 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
     if not out.exists():
-        print("chrome produced no screenshot", file=sys.stderr)
+        print("chrome produced no screenshot — a killed headless Chrome can leave "
+              "a stale lock; `pkill -f 'Google Chrome.*headless'` and retry",
+              file=sys.stderr)
         return 1
     print(f"{out} — open it and read the last line (expect PASS)")
     return 0
