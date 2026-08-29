@@ -1,0 +1,9 @@
+{
+  "id": "spheregrid",
+  "name": "Sphere Grid",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "The memory-tools sphere grid atlas as a workspace view. Click a note to open it beside the map.",
+  "author": "memory-tools",
+  "isDesktopOnly": true
+}

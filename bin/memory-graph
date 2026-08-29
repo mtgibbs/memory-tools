@@ -665,6 +665,213 @@ def cmd_where(g: Graph, a) -> dict:
     return out
 
 
+def _authored_between(g: Graph, a: str, b: str) -> bool:
+    return (any(d == b and prov == "authored" for d, prov in g.out[a])
+            or any(s == b and prov == "authored" for s, prov in g.inn[a]))
+
+
+def _parent_tree(g: Graph, members: list[str], anchor: str
+                 ) -> tuple[dict[str, str | None], dict[str, int]]:
+    """BFS out from the anchor, choosing each note's parent deliberately.
+
+    A breadth-first walk hands you a parent for free — the neighbour that first
+    reached a note — and that parent relation is a tree: real nesting, derived
+    from the links, without folders and without moving a single file.
+
+    But "first reached" is only meaningful if you say what first means. A note
+    three hops out often has several neighbours one hop closer, and taking
+    whichever the iterator happened to yield is how the pod ring ended up
+    asserting a relationship it picked at random. So the rule is explicit: an
+    AUTHORED link beats an inferred one, because a machine guess should not get
+    to be your parent; then the better-connected candidate, because a hub is a
+    likelier route than a leaf; then name, so the tree is the same on every run.
+
+    Notes the walk never reaches come back with no depth. They are not failures
+    of the rule — they are notes with no path to what their realm is about, and
+    dev-risk-gauge has 24 of 32 of them.
+    """
+    ms = set(members)
+    parent: dict[str, str | None] = {anchor: None}
+    depth: dict[str, int] = {anchor: 0}
+    frontier = [anchor]
+    while frontier:
+        reach: dict[str, list[str]] = defaultdict(list)
+        for cur in frontier:
+            for nb in sorted(g.undirected(cur) & ms):
+                if nb not in depth:
+                    reach[nb].append(cur)
+        nxt = []
+        for node in sorted(reach):
+            best = min(reach[node], key=lambda c: (0 if _authored_between(g, c, node) else 1,
+                                                   -len(g.undirected(c)), c))
+            parent[node] = best
+            depth[node] = depth[best] + 1
+            nxt.append(node)
+        frontier = nxt
+    return parent, depth
+
+
+def _radial_tree(members: list[str], anchor: str, parent: dict, depth: dict,
+                 arc: float, step: float) -> tuple[dict[str, tuple[float, float]], float]:
+    """Lay the tree out radially: depth is radius, and a subtree owns a wedge.
+
+    A wedge is shared out by how many notes hang below a child, not by how many
+    children there are, so a heavy branch gets the room it needs and a single
+    leaf does not get a quarter of the disc.
+    """
+    kids: dict[str, list[str]] = defaultdict(list)
+    for node, par in parent.items():
+        if par is not None:
+            kids[par].append(node)
+    for k in kids:
+        kids[k].sort()
+
+    weight: dict[str, int] = {}
+    def measure(node: str) -> int:
+        w = sum(measure(c) for c in kids[node]) or 1
+        weight[node] = w
+        return w
+    measure(anchor)
+
+    # each depth gets a radius that fits the notes standing on it
+    at_depth: dict[int, int] = defaultdict(int)
+    for node in depth:
+        at_depth[depth[node]] += 1
+    radius = {0: 0.0}
+    for d in range(1, (max(depth.values()) if depth else 0) + 1):
+        radius[d] = max(radius[d - 1] + step, at_depth[d] * arc / (2 * math.pi))
+
+    pos: dict[str, tuple[float, float]] = {anchor: (0.0, 0.0)}
+    def place(node: str, lo: float, hi: float) -> None:
+        span = hi - lo
+        acc = lo
+        for c in kids[node]:
+            share = span * weight[c] / weight[node]
+            mid = acc + share / 2
+            pos[c] = (radius[depth[c]] * math.cos(mid), radius[depth[c]] * math.sin(mid))
+            place(c, acc, acc + share)
+            acc += share
+    place(anchor, 0.0, 2 * math.pi)
+
+    # notes with no path to the anchor get an outer belt and no parent edge
+    rim = (max(radius.values()) if radius else 0.0) + step
+    loose = sorted(m for m in members if m not in pos)
+    if loose:
+        rim = max(rim, len(loose) * arc / (2 * math.pi))
+        for i, m in enumerate(loose):
+            th = 2 * math.pi * i / len(loose)
+            pos[m] = (rim * math.cos(th), rim * math.sin(th))
+    return pos, max((math.hypot(x, y) for x, y in pos.values()), default=0.0)
+
+
+def _accrete_pods(g: Graph, members: list[str], size: int) -> list[list[str]]:
+    """Grow pods by admission, so being on a ring means something checkable.
+
+    The rule: **a note joins a pod because it links to a note already in that
+    pod.** Nothing else gets you on a ring. A pod starts at the best-connected
+    unplaced note and repeatedly admits whichever unplaced note has the most
+    links into the pod so far; when no candidate has even one, the pod closes
+    short rather than padding itself with strangers.
+
+    That is the property the drawn ring was quietly claiming and did not have.
+    Grouping by type gave a ring a weak but true meaning — same type — which the
+    glyph now says anyway. Grouping by community gave it none you could check:
+    label propagation puts notes on a ring that share no edge, and in a realm
+    whose 76 notes form one connected component of 71, six arbitrary members of
+    that component will not link to each other. Hovering one lit nothing,
+    correctly, and the ring was the thing that lied.
+
+    Notes with no link into any pod come back as pods of one, drawn without a
+    ring, because there is nothing to enclose.
+    """
+    scope = set(members)
+    adj = {m: (g.undirected(m) & scope) for m in members}
+    left = set(members)
+    pods: list[list[str]] = []
+    while left:
+        seed = min(left, key=lambda m: (-len(adj[m] & left), m))
+        left.discard(seed)
+        pod = [seed]
+        while len(pod) < size:
+            inpod = set(pod)
+            best, score = None, 0
+            for c in sorted(left):
+                hits = len(adj[c] & inpod)
+                if hits > score:
+                    best, score = c, hits
+            if best is None:
+                break                       # nobody left links in — close it short
+            left.discard(best)
+            pod.append(best)
+        pods.append(pod)
+    return pods
+
+
+def _clusters(g: Graph, members: list[str]) -> dict[str, str]:
+    """Group a realm's notes by who they actually link to.
+
+    Label propagation over the realm's own undirected edges: every note starts
+    in its own group and repeatedly adopts whichever group most of its
+    neighbours are in. Ties break on the group's name, and notes are visited in
+    sorted order, so the result is the same on every run over the same corpus —
+    which the rest of this command depends on.
+
+    Notes with no intra-realm link keep their own group; they have no evidence
+    to join anyone, and inventing one would be a lie about the corpus.
+    """
+    scope = set(members)
+    adj = {m: sorted(g.undirected(m) & scope) for m in members}
+    lab = {m: m for m in members}
+    for _ in range(40):
+        moved = 0
+        for m in sorted(members):
+            if not adj[m]:
+                continue
+            tally: dict[str, int] = defaultdict(int)
+            for nb in adj[m]:
+                tally[lab[nb]] += 1
+            best = min(tally, key=lambda k: (-tally[k], k))
+            if best != lab[m]:
+                lab[m] = best
+                moved += 1
+        if not moved:
+            break
+    return lab
+
+
+def _cohesion_order(g: Graph, members: list[str]) -> list[str]:
+    """Order a type's notes by who they link to, not by rank.
+
+    A pod holds six notes, so a thirty-note type becomes five pods chained
+    outward from the anchor. Ordered by degree, which pod a note lands in has
+    nothing to do with the link graph — two notes that cite each other routinely
+    end up four pods apart, and hovering one throws a chord straight across the
+    disc to the other. The pods looked like clusters and were not.
+
+    So walk the type's own subgraph instead: take the best-connected note, then
+    keep taking whichever unplaced note shares the most edges with what is
+    already down. Linked notes come out adjacent in the sequence, so the chain a
+    pod sits on is something the links agree with.
+
+    Measured on this corpus: 19% of intra-realm links shared a pod under degree
+    order, 32% do under this, and 58% land in the same pod or the one beside it.
+    Ties break on name, so the walk is as deterministic as the sort it replaces.
+    """
+    scope = set(members)
+    adj = {m: (g.undirected(m) & scope) for m in members}
+    left, placed, out = set(members), set(), []
+    while left:
+        seed = min(left, key=lambda m: (-len(adj[m] & left), m))
+        left.discard(seed); placed.add(seed); out.append(seed)
+        frontier = adj[seed] & left
+        while frontier:
+            nxt = min(frontier, key=lambda m: (-len(adj[m] & placed), -len(adj[m] & left), m))
+            left.discard(nxt); placed.add(nxt); out.append(nxt)
+            frontier |= adj[nxt] & left
+            frontier &= left
+    return out
+
+
 def cmd_spheregrid(g: Graph, a) -> dict:
     """The sphere-grid atlas: assigned positions, drawn links, no layout physics.
 
@@ -687,6 +894,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
     the map reads as a graph of galaxies and zoomed in each one resolves into its
     own grid."""
     POD, POD_ARC, POD_STEP, POD_DIAM = 6, 42.0, 122.0, 118.0
+    TREE_ARC, TREE_STEP = 46.0, 104.0
     TYPE_ORDER = ("user", "feedback", "project", "reference", "")
     GA = 2.399963229728653          # golden angle, same constant the forcemap uses
 
@@ -794,6 +1002,8 @@ def cmd_spheregrid(g: Graph, a) -> dict:
     pos: dict[str, tuple[float, float]] = {}
     hop_of: dict[str, int] = {}
     spiral_of: dict[str, int] = {}   # position along the realm's spiral
+    pod_of: dict[str, int] = {}      # which pod, so membership is checkable
+    parent_of: dict[str, str | None] = {}
     realms_out: list[dict] = []
     for realm, members in sorted(by_realm.items()):
         mset = set(members)
@@ -812,18 +1022,73 @@ def cmd_spheregrid(g: Graph, a) -> dict:
         # Hop distance moves to the tooltip. It was a real signal, but it competed
         # with type for the same axis and type is the one you can act on.
         groups: dict[str, list[str]] = defaultdict(list)
+        cluster = _clusters(g, members) if a.group == "cluster" else {}
         for m in members:
             hop_of[m] = hop[m]
             if m != anchor:
-                groups[type_of.get(m, "")].append(m)
+                groups[cluster[m] if a.group == "cluster" else type_of.get(m, "")].append(m)
         pos[anchor] = (0.0, 0.0)
         spiral_of[anchor] = 0
 
+        if a.layout == "tree":
+            # Depth is radius and a subtree owns a wedge; the parent edge is the
+            # track. Unlike the pod ring it has a rule you can check by hovering:
+            # this note was reached through that one.
+            par, dep = _parent_tree(g, members, anchor)
+            local, extent = _radial_tree(members, anchor, par, dep, TREE_ARC, TREE_STEP)
+            for m in members:
+                pos[m] = local[m]
+                spiral_of[m] = dep.get(m, 99)
+                pod_of[m] = -1
+            parent_of.update({m: par.get(m) for m in members})
+            realms_out.append({"name": realm, "short": short(realm),
+                               "work": realm.startswith("work--"),
+                               "n": len(members), "anchor": anchor.split("/")[-1],
+                               "hue": hues[realm], "rad": extent + 34, "hopR": [],
+                               "pods": [], "podLinks": [],
+                               "rings": max(hop.values(), default=0),
+                               "centre": realm == centre_realm,
+                               "grouped": "tree",
+                               "minor": len(members) < a.min_galaxy})
+            continue
+
         chains: list[tuple[str, list[list[str]]]] = []
-        for key in TYPE_ORDER:
-            ms = sorted(groups.get(key, []), key=lambda m: (-len(g.undirected(m)), m))
-            if ms:
-                chains.append((key, [ms[i:i + POD] for i in range(0, len(ms), POD)]))
+        if a.group == "linked":
+            built = _accrete_pods(g, sorted(m for m in members if m != anchor), POD)
+            # A chain should be a chain. Order pods by walking pod-to-pod links —
+            # start at the largest, then repeatedly take whichever unplaced pod
+            # shares the most links with the one just placed — so a spoke joins
+            # pods that actually reference each other instead of joining pod 4 to
+            # pod 5 because 4 < 5.
+            idx_of = {m: i for i, pod in enumerate(built) for m in pod}
+            plink: dict[tuple[int, int], int] = defaultdict(int)
+            for m in idx_of:
+                for o in g.undirected(m):
+                    if o in idx_of and idx_of[o] != idx_of[m]:
+                        plink[(min(idx_of[m], idx_of[o]), max(idx_of[m], idx_of[o]))] += 1
+            def weight(x: int, y: int) -> int:
+                return plink.get((min(x, y), max(x, y)), 0)
+            left = set(range(len(built)))
+            order: list[int] = []
+            while left:
+                if order:
+                    nxt = min(left, key=lambda k: (-weight(order[-1], k), -len(built[k]), built[k][0]))
+                    if weight(order[-1], nxt) == 0:
+                        nxt = min(left, key=lambda k: (-len(built[k]), built[k][0]))
+                else:
+                    nxt = min(left, key=lambda k: (-len(built[k]), built[k][0]))
+                left.discard(nxt)
+                order.append(nxt)
+            chains.append(("linked", [built[k] for k in order]))
+        else:
+            # By type the sector order is fixed and meaningful; by cluster it is
+            # whatever the graph produced, so biggest first, name to break ties.
+            keys = TYPE_ORDER if a.group == "type" else sorted(
+                groups, key=lambda k: (-len(groups[k]), k))
+            for key in keys:
+                ms = _cohesion_order(g, sorted(groups.get(key, [])))
+                if ms:
+                    chains.append((key, [ms[i:i + POD] for i in range(0, len(ms), POD)]))
         total_pods = sum(len(c) for _, c in chains) or 1
         # The first ring has to clear its neighbours, and how far out that is
         # depends on how many groups share the circle. Fixed at 96 it left a
@@ -849,7 +1114,15 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                 cap = max(1, int(dist * width / POD_DIAM))
                 cnt = min(cap, len(chunks) - idx)
                 for j in range(cnt):
-                    th = cursor + width * (j + 0.5) / cnt
+                    # Serpentine: odd rows run the other way round the sector, so
+                    # the last pod of one row sits beside the first pod of the
+                    # next. Filling every row in the same direction made the
+                    # chain's order meaningless in space — consecutive pods
+                    # landed at opposite ends of the arc, which is why ordering
+                    # the notes by cohesion moved same-pod links up and did
+                    # nothing at all to how far a link reaches.
+                    slot = (cnt - 1 - j) if (row % 2) else j
+                    th = cursor + width * (slot + 0.5) / cnt
                     cx, cy = dist * math.cos(th), dist * math.sin(th)
                     pod = chunks[idx + j]
                     pr = 0.0 if len(pod) == 1 else max(16.0, len(pod) * POD_ARC / (2 * math.pi))
@@ -859,6 +1132,8 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                         spiral_of[m] = rank
                         rank += 1
                     k = len(pods)
+                    for m in pod:
+                        pod_of[m] = k
                     pods.append({"x": round(cx, 2), "y": round(cy, 2),
                                  "r": round(pr, 2), "n": len(pod), "t": key or "other"})
                     pod_links.append([-1, k] if k == first_in_group else [k - 1, k])
@@ -874,6 +1149,7 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                            "pods": pods, "podLinks": pod_links,
                            "rings": max(hop.values(), default=0),
                            "centre": realm == centre_realm,
+                           "grouped": a.group,
                            "minor": len(members) < a.min_galaxy})
 
     # ---- pack the discs to fill the plane --------------------------------
@@ -934,6 +1210,8 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                           "dead": node in g.status,
                           "chal": len(g.challenged.get(node, [])),
                           "hop": hop_of[node], "si": spiral_of[node],
+                          "pod": pod_of.get(node, -1),
+                          "par": parent_of.get(node),
                           "type": type_of[node] or "other",
                           "deg": sum(1 for _, p in g.inn[node] if p == "authored"),
                           "conn": len(g.undirected(node)),
@@ -957,7 +1235,21 @@ def cmd_spheregrid(g: Graph, a) -> dict:
             if prov == "authored":
                 e["g"] = 0
     edges = list(pairs.values())
+    # conn is what the tooltip reports, so it has to mean links you can find.
+    # g.undirected() counts targets this map excludes — every realm's MEMORY.md
+    # among them — so a node could read "3 links" with two edges on screen and
+    # send you hunting for one that was never drawn.
+    degree = [0] * len(nodes)
+    for e in edges:
+        degree[e["s"]] += 1
+        degree[e["t"]] += 1
+    for i, n in enumerate(nodes):
+        n["conn"] = degree[i]
 
+    # parents are emitted as node indices; the template draws them as track
+    for n in nodes:
+        pn = n.get("par")
+        n["par"] = index.get(pn, -1) if pn else -1
     data = json.dumps({"vault": g.vault.name, "root": str(g.vault),
                        "centre": centre_realm, "centre_short": short(centre_realm),
                        "centre_from": centre_from,
@@ -965,12 +1257,21 @@ def cmd_spheregrid(g: Graph, a) -> dict:
                        "corridors": [c for c in corridors.values()
                                      if c["a"] in origin and c["b"] in origin]},
                       separators=(",", ":")).replace("</", "<\\/")
-    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "spheregrid.html"
-    tpl = tpl_path.read_text(encoding="utf-8")
-    assert tpl.count("__DATA__") == 1, f"placeholder missing in {tpl_path}"
-    out = Path(a.out).expanduser() if a.out else g.vault / "spheregrid.html"
-    out.write_text(tpl.replace("__DATA__", data))
-    return {"spheregrid": str(out), "notes": len(nodes), "edges": len(edges),
+    tpl_dir = Path(__file__).resolve().parent.parent / "templates"
+    # --data writes only the payload. The Obsidian plugin renders from that file
+    # with the same renderer this page inlines, so there is one implementation of
+    # the map and one implementation of the layout, and neither can drift.
+    if a.data:
+        Path(a.data).expanduser().write_text(data)
+        out = Path(a.data).expanduser()
+    else:
+        tpl = (tpl_dir / "spheregrid.html").read_text(encoding="utf-8")
+        render = (tpl_dir / "spheregrid.render.js").read_text(encoding="utf-8")
+        assert tpl.count("__DATA__") == 1 and tpl.count("__RENDER__") == 1, "placeholder missing"
+        out = Path(a.out).expanduser() if a.out else g.vault / "spheregrid.html"
+        out.write_text(tpl.replace("__RENDER__", render.replace("export function", "function", 1))
+                          .replace("__DATA__", data))
+    return {"spheregrid": str(out), "format": "json" if a.data else "html", "notes": len(nodes), "edges": len(edges),
             "ghost_edges": sum(e["g"] for e in edges),
             "galaxies": sum(1 for r in realms_out if not r["minor"]),
             "minor": sum(1 for r in realms_out if r["minor"]),
@@ -1094,11 +1395,12 @@ def render(cmd: str, data: dict) -> None:
         why = {"cwd": "from this working directory", "flag": "as asked",
                "empty": "this project has no notes yet — showing the largest realm",
                "largest": "largest realm — this cwd has no vault realm"}[data["centre_from"]]
-        print(f"{data['spheregrid']}: centred on {data['centre']} ({why})")
+        print(f"{data['spheregrid']} [{data['format']}]: centred on {data['centre']} ({why})")
         print(f"  {data['notes']} notes in {data['galaxies']} galaxies "
               f"+ {data['minor']} minor, {data['rings']} rings deep")
         print(f"  {data['edges']} links ({data['ghost_edges']} inferred, drawn as ghosts), "
-              f"{data['corridors']} corridors — open in a browser")
+              f"{data['corridors']} corridors"
+              + ("" if data["format"] == "json" else " — open in a browser"))
     elif cmd == "forcemap":
         print(f"{data['forcemap']}: {data['notes']} notes, {data['edges']} edges "
               f"({data['boundary_edges']} boundary), {data['identity_notes']} identity — "
@@ -1130,8 +1432,21 @@ def main() -> int:
                    help="ask about another directory instead of the current one")
     p.add_argument("-n", type=int, default=5, help="how many entry points to list")
     p = sub.add_parser("spheregrid"); p.add_argument("--out", default=None)
+    p.add_argument("--data", metavar="FILE", default=None,
+                   help="write the layout payload as JSON instead of HTML "
+                        "(what the Obsidian plugin renders)")
     p.add_argument("--center", default="auto",
                    help="realm at the origin: a realm slug/substring, or 'auto' (this cwd)")
+    p.add_argument("--group", choices=("type", "cluster", "linked"), default="type",
+                   help="what a pod holds: notes of one TYPE, or notes that link "
+                        "to each other by a heuristic (CLUSTER), or notes each "
+                        "admitted because they link to one already there (LINKED — "
+                        "the only one whose drawn ring means something checkable). "
+                        "Type is readable from the glyph in all three")
+    p.add_argument("--layout", choices=("pods", "tree"), default="pods",
+                   help="pods chains rings off the anchor; TREE nests notes under "
+                        "the note that reached them, so the drawn edge means "
+                        "something. --group is ignored under tree")
     p.add_argument("--min-galaxy", type=int, default=4,
                    help="realms under this many notes render as minor, not their own galaxy")
 
