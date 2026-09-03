@@ -350,4 +350,86 @@ The rest, in order of how much it changed:
 Glow is a cached sprite per colour, not `shadowBlur` — same falloff, paid once
 instead of 106 times a frame.
 
+#### Two vaults, one map
+
+Work memory lives in its own vault, not as prefixed realms inside the personal
+one — deliberately, so neither is ever copied into the other. `--also-work`
+merges a second root at read time and marks its realms `work--`:
+
+```bash
+memory-graph --also-work ~/work-memories/projects spheregrid
+memory-graph --also-work ~/work-memories/projects where     # resolves either side
+```
+
+The work/personal apparatus was already in here — boundary edges, the lock glyph
+on a crossing corridor, `work--` realm names — and **nothing had ever populated
+it**, so the split rendered with everything on one side. Merged, this vault reads
+366 notes across 35 realms, with 8 boundary links over 2 crossing corridors.
+
+Each side gets its own hemisphere. A lock on a crossing only means something if
+there is a line to cross; interleaved, the glyph marks a boundary the layout does
+not have. Packing is still largest-first into the nearest free spot — a realm on
+the wrong side just pays for the distance, so the split is a strong preference
+rather than a wall.
+
+#### What actually made it slow
+
+Merged, the map is 366 notes and it lagged. Measured before touching anything:
+**avg 11.4 ms, p95 56 ms, 11,309 canvas calls a frame.**
+
+Cutting calls to 6,950 (39% off) barely moved the average and did nothing for
+the spikes — **it was never call-bound.** What it is:
+
+- **`backdrop-filter: blur()` on the panels.** A canvas repainting at 60fps
+  underneath forces the browser to re-blur those regions every frame. Deleted.
+  This one is invisible to a profiler that hides the chrome before measuring,
+  which is exactly what mine did — it was found by reasoning about what the
+  measurement could not see.
+- **Fillrate, not draw calls.** At `devicePixelRatio` 2 the backing store is
+  3200×2000 = 6.4M pixels, and the background *and* the vignette each covered
+  all of it every frame. The backing store is capped at 1.5 (44% fewer pixels,
+  indistinguishable on a starfield and soft gradients) and the vignette is
+  pre-rendered once per resize and blitted instead of shaded.
+- **Allocation.** 35 radial gradients and ~470 colour strings were built per
+  frame. Both are now built once.
+
+Also cheaper, and worth having anyway: viewport culling in every pass (at 35
+realms most of the map leaves the screen the moment you zoom), eight batched
+star tiers instead of 900 individual arcs, and skipping bead highlights and rim
+graduations below the size where they resolve.
+
+> **Caveat, stated plainly:** the p95 number is not trustworthy in a headless
+> harness that calls `draw()` in a tight synchronous loop — ablation showed the
+> spikes were identical with every feature disabled, which means they are the
+> measurement, not the page. The average and the call counts are real; the
+> spike fixes are reasoned, not verified.
+
 `?ambient` gives the wall display a slow tour with no chrome.
+
+#### `--data`, and the Obsidian plugin
+
+```bash
+memory-graph spheregrid --data ~/.claude/projects/spheregrid.json
+```
+
+Writes the layout payload instead of a page. `obsidian-plugin/` renders that file
+as a workspace view; click a note and it opens in a split beside the map.
+
+**There is one renderer.** `templates/spheregrid.render.js` is inlined into the
+standalone HTML by this command and *imported* by the plugin — not copied. Two
+renderers would drift, and the drift would be invisible until someone noticed the
+two views disagreed about the map. Layout is not reimplemented either: it is
+computed here and the plugin is a viewer.
+
+`tests/pane-hittest.py` covers the mapping that made this hard: the renderer
+originally sized itself from `innerWidth` and hit-tested with `ev.clientX`, which
+are the canvas's own box on a standalone page and wrong by the pane's origin
+anywhere else — so in Obsidian nothing was clickable and only panning worked. The
+test puts the canvas at an offset in a differently-sized box and clicks the exact
+centre of eight nodes.
+
+The plugin is the answer to "should we build our own notes app". The thing worth
+having is Obsidian with a different graph view, and building it standalone means
+rebuilding editing, search, backlinks, file watching, conflict handling, sync and
+mobile — the ninety percent of Obsidian that is not the graph — to get a view you
+can inject instead. The right-hand pane there **is** Obsidian's pane.
